@@ -1,0 +1,32 @@
+# Binaries & build artifacts
+backend/backend
+*.exe
+*.dll
+*.so
+dist/
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Environment files & secrets
+.env
+.env.*
+!.env.example
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
+
+# Internal agent and planning documents
+AGENTS.md
+GEMINI.md
+PROJECT_PLAN.md
+PROJECT.md
+.agents/
+.codex/
