@@ -2,6 +2,12 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 const API_BASE_URL = 'http://localhost:8080';
 
+interface User {
+  id: number;
+  email: string;
+  created_at: string;
+}
+
 interface DocumentItem {
   id: number;
   filename: string;
@@ -33,6 +39,23 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
+  // Authentication state
+  const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem('docupilot_auth_token'));
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authEmail, setAuthEmail] = useState<string>('');
+  const [authPassword, setAuthPassword] = useState<string>('');
+  const [authConfirmPassword, setAuthConfirmPassword] = useState<string>('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(false);
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+
+  // Password validation helper flags
+  const isMinLength = authPassword.length >= 8 && authPassword.length <= 72;
+  const hasLetterAndNum = /[a-zA-Z]/.test(authPassword) && /[^a-zA-Z]/.test(authPassword);
+  const passwordsMatch = authPassword.length > 0 && authPassword === authConfirmPassword;
+
   // Gemini API key state (stored in localStorage)
   const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('docupilot_gemini_key') || '');
   const [showKeyModal, setShowKeyModal] = useState<boolean>(false);
@@ -40,9 +63,71 @@ export default function App() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Builds standard headers including optional Bearer JWT token and Gemini API key
+  const getAuthHeaders = useCallback((additionalHeaders: Record<string, string> = {}) => {
+    const headers: Record<string, string> = { ...additionalHeaders };
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    if (apiKey.trim()) {
+      headers['X-Gemini-Api-Key'] = apiKey.trim();
+    }
+    return headers;
+  }, [authToken, apiKey]);
+
+  // Verify and load current user profile on token change
+  useEffect(() => {
+    if (!authToken) {
+      setCurrentUser(null);
+      return;
+    }
+
+    const verifyToken = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/auth/me`, {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setCurrentUser(data.user);
+        } else if (res.status === 401) {
+          // Token expired or invalid
+          localStorage.removeItem('docupilot_auth_token');
+          setAuthToken(null);
+          setCurrentUser(null);
+        }
+      } catch {
+        // Offline or backend unavailable
+      }
+    };
+
+    verifyToken();
+  }, [authToken]);
+
+  // Handle ESC key to dismiss open modals smoothly
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (showAuthModal) {
+          setShowAuthModal(false);
+          setAuthError(null);
+        }
+        if (showKeyModal) {
+          setShowKeyModal(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showAuthModal, showKeyModal]);
+
   const fetchDocuments = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/documents`);
+      const res = await fetch(`${API_BASE_URL}/api/documents`, {
+        headers: getAuthHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
         setDocuments(data || []);
@@ -50,11 +135,13 @@ export default function App() {
     } catch {
       // Non-fatal if backend is starting up
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   const fetchDocumentDetails = useCallback(async (docId: number) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/documents/${docId}`);
+      const res = await fetch(`${API_BASE_URL}/api/documents/${docId}`, {
+        headers: getAuthHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.document) {
@@ -68,11 +155,11 @@ export default function App() {
     } catch {
       // Ignore
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   useEffect(() => {
     fetchDocuments();
-  }, [fetchDocuments]);
+  }, [fetchDocuments, authToken]);
 
   // Poll processing status if active document is processing
   useEffect(() => {
@@ -132,6 +219,7 @@ export default function App() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/upload`, {
         method: 'POST',
+        headers: getAuthHeaders(),
         body: formData,
       });
 
@@ -172,6 +260,7 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/documents/${id}`, {
         method: 'DELETE',
+        headers: getAuthHeaders(),
       });
       if (res.ok) {
         if (activeDoc?.id === id) {
@@ -182,6 +271,9 @@ export default function App() {
           setSources([]);
         }
         fetchDocuments();
+      } else {
+        const data = await res.json();
+        setError(data.error || 'Failed to delete document');
       }
     } catch (err: unknown) {
       if (err instanceof Error) setError(err.message);
@@ -223,16 +315,11 @@ export default function App() {
         payload.text = text.trim();
       }
 
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (apiKey.trim()) {
-        headers['X-Gemini-Api-Key'] = apiKey.trim();
-      }
-
       const response = await fetch(`${API_BASE_URL}/api/ask`, {
         method: 'POST',
-        headers,
+        headers: getAuthHeaders({
+          'Content-Type': 'application/json',
+        }),
         body: JSON.stringify(payload),
       });
 
@@ -261,41 +348,412 @@ export default function App() {
     }
   };
 
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+
+    const cleanEmail = authEmail.trim();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setAuthError('Please enter a valid email address.');
+      return;
+    }
+
+    if (authPassword.length < 8) {
+      setAuthError('Password must be at least 8 characters long.');
+      return;
+    }
+
+    if (authMode === 'register' && authPassword !== authConfirmPassword) {
+      setAuthError('Passwords do not match.');
+      return;
+    }
+
+    setAuthLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth/${authMode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password: authPassword }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Authentication request failed');
+      }
+
+      localStorage.setItem('docupilot_auth_token', data.token);
+      setAuthToken(data.token);
+      setCurrentUser(data.user);
+      setShowAuthModal(false);
+      setAuthPassword('');
+      setAuthConfirmPassword('');
+      setStatusMessage(authMode === 'register' ? 'Account created successfully! Welcome to DocuPilot.' : 'Signed in successfully.');
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setAuthError(err.message);
+      } else {
+        setAuthError('An unexpected authentication error occurred.');
+      }
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('docupilot_auth_token');
+    setAuthToken(null);
+    setCurrentUser(null);
+    setActiveDoc(null);
+    setText('');
+    setHistory([]);
+    setAnswer(null);
+    setSources([]);
+    setStatusMessage('You have signed out successfully.');
+  };
+
   return (
     <div className="container">
       <header className="header">
         <div className="header-top">
           <h1>✈️ DocuPilot</h1>
-          <button
-            type="button"
-            className={`btn-api-key ${apiKey ? 'configured' : ''}`}
-            onClick={() => {
-              setTempKey(apiKey);
-              setShowKeyModal(true);
-            }}
-          >
-            {apiKey ? '🔑 API Key: Configured' : '🔑 Set Gemini API Key'}
-          </button>
+          <div className="header-controls">
+            <button
+              type="button"
+              className={`btn-api-key ${apiKey ? 'configured' : ''}`}
+              onClick={() => {
+                setTempKey(apiKey);
+                setShowKeyModal(true);
+              }}
+            >
+              {apiKey ? '🔑 API Key: Configured' : '🔑 Set Gemini API Key'}
+            </button>
+
+            {currentUser ? (
+              <>
+                <span className="user-badge" title={`Signed in as ${currentUser.email}`}>
+                  👤 {currentUser.email}
+                </span>
+                <button type="button" className="btn-logout" onClick={handleLogout}>
+                  Log Out
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="btn-auth"
+                onClick={() => {
+                  setAuthError(null);
+                  setAuthMode('login');
+                  setShowPassword(false);
+                  setShowAuthModal(true);
+                }}
+              >
+                Sign In / Register
+              </button>
+            )}
+          </div>
         </div>
         <p className="badge">AI PDF Assistant • Semantic Search & Vector Retrieval</p>
       </header>
 
+      {/* Authentication Modal */}
+      {showAuthModal && (
+        <div
+          className="modal-backdrop"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowAuthModal(false);
+              setAuthError(null);
+            }
+          }}
+        >
+          <div className="modal-content auth-modal">
+            <div className="modal-header">
+              <div className="modal-title-wrap auth-title-block">
+                <span className="auth-brand-badge">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                  {authMode === 'login' ? 'Secure Sign In' : 'DocuPilot Access'}
+                </span>
+                <h2 className="auth-modal-title">
+                  {authMode === 'login' ? 'Welcome back' : 'Create your account'}
+                </h2>
+                <p className="auth-modal-subtitle">
+                  {authMode === 'login'
+                    ? 'Enter your credentials to access your document library.'
+                    : 'Start asking questions about your documents with grounded AI.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => {
+                  setShowAuthModal(false);
+                  setAuthError(null);
+                }}
+                aria-label="Close modal"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="auth-segmented-switch">
+              <button
+                type="button"
+                className={`auth-segment-btn ${authMode === 'login' ? 'active' : ''}`}
+                onClick={() => {
+                  setAuthMode('login');
+                  setAuthError(null);
+                }}
+              >
+                Sign In
+              </button>
+              <button
+                type="button"
+                className={`auth-segment-btn ${authMode === 'register' ? 'active' : ''}`}
+                onClick={() => {
+                  setAuthMode('register');
+                  setAuthError(null);
+                }}
+              >
+                Create Account
+              </button>
+            </div>
+
+            {authError && (
+              <div className="alert-error" role="alert">
+                <span className="alert-icon">⚠️</span>
+                <span>{authError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleAuthSubmit} className="auth-form">
+              <div className="form-group">
+                <label htmlFor="auth-email">Email Address</label>
+                <div className="input-with-icon">
+                  <svg className="field-svg-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect width="20" height="16" x="2" y="4" rx="2" />
+                    <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+                  </svg>
+                  <input
+                    id="auth-email"
+                    type="email"
+                    required
+                    placeholder="name@company.com"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    autoComplete="email"
+                  />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <div className="label-row">
+                  <label htmlFor="auth-password">Password</label>
+                  {authMode === 'register' && (
+                    <span className="label-hint">8–72 characters</span>
+                  )}
+                </div>
+                <div className="input-with-icon">
+                  <svg className="field-svg-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                  <input
+                    id="auth-password"
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    placeholder="••••••••"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+                  />
+                  <button
+                    type="button"
+                    className="btn-toggle-password"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? (
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+                        <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+                        <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+                        <line x1="2" x2="22" y1="2" y2="22" />
+                      </svg>
+                    ) : (
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                        <circle cx="12" cy="12" r="3" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {authMode === 'register' && (
+                <>
+                  <div className="form-group">
+                    <label htmlFor="auth-confirm-password">Confirm Password</label>
+                    <div className="input-with-icon">
+                      <svg className="field-svg-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                      </svg>
+                      <input
+                        id="auth-confirm-password"
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        placeholder="••••••••"
+                        value={authConfirmPassword}
+                        onChange={(e) => setAuthConfirmPassword(e.target.value)}
+                        autoComplete="new-password"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="auth-criteria">
+                    <div className={`criteria-item ${isMinLength ? 'met' : ''}`}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                      <span>8 to 72 characters</span>
+                    </div>
+                    <div className={`criteria-item ${hasLetterAndNum ? 'met' : ''}`}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                      <span>Contains letters & numbers/symbols</span>
+                    </div>
+                    {authConfirmPassword && (
+                      <div className={`criteria-item ${passwordsMatch ? 'met' : 'unmet'}`}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                          {passwordsMatch ? (
+                            <polyline points="20 6 9 17 4 12" />
+                          ) : (
+                            <>
+                              <line x1="18" y1="6" x2="6" y2="18" />
+                              <line x1="6" y1="6" x2="18" y2="18" />
+                            </>
+                          )}
+                        </svg>
+                        <span>{passwordsMatch ? 'Passwords match' : 'Passwords do not match'}</span>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              <div className="modal-actions auth-actions">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setShowAuthModal(false);
+                    setAuthError(null);
+                  }}
+                  disabled={authLoading}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="auth-submit-btn" disabled={authLoading}>
+                  {authLoading ? (
+                    <span className="btn-loading-content">
+                      <span className="spinner" />
+                      Please wait...
+                    </span>
+                  ) : authMode === 'login' ? (
+                    'Sign In'
+                  ) : (
+                    'Create Account'
+                  )}
+                </button>
+              </div>
+            </form>
+
+            <div className="auth-footer">
+              {authMode === 'login' ? (
+                <span>
+                  Don&apos;t have an account yet?{' '}
+                  <button
+                    type="button"
+                    className="auth-link"
+                    onClick={() => {
+                      setAuthMode('register');
+                      setAuthError(null);
+                    }}
+                  >
+                    Create one now
+                  </button>
+                </span>
+              ) : (
+                <span>
+                  Already have an account?{' '}
+                  <button
+                    type="button"
+                    className="auth-link"
+                    onClick={() => {
+                      setAuthMode('login');
+                      setAuthError(null);
+                    }}
+                  >
+                    Sign in
+                  </button>
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {showKeyModal && (
-        <div className="modal-backdrop">
+        <div
+          className="modal-backdrop"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowKeyModal(false);
+            }
+          }}
+        >
           <div className="modal-content">
-            <h3>🔑 Configure Gemini API Key</h3>
-            <p className="modal-desc">
-              Your API key will be safely stored in your browser session and sent directly with requests to your local backend.
-            </p>
+            <div className="modal-header">
+              <div className="modal-title-wrap">
+                <div className="modal-icon-badge">🔑</div>
+                <div>
+                  <h3>Configure Gemini API Key</h3>
+                  <p className="modal-desc">
+                    Your API key will be safely stored in your browser session and sent directly with requests to your local backend.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setShowKeyModal(false)}
+                aria-label="Close modal"
+              >
+                ✕
+              </button>
+            </div>
+
             <div className="form-group">
-              <label htmlFor="api-key-input">Gemini API Key:</label>
-              <input
-                id="api-key-input"
-                type="password"
-                placeholder="AIzaSy..."
-                value={tempKey}
-                onChange={(e) => setTempKey(e.target.value)}
-              />
+              <label htmlFor="api-key-input">Gemini API Key</label>
+              <div className="input-with-icon">
+                <span className="input-icon">🔐</span>
+                <input
+                  id="api-key-input"
+                  type="password"
+                  placeholder="AIzaSy..."
+                  value={tempKey}
+                  onChange={(e) => setTempKey(e.target.value)}
+                />
+              </div>
             </div>
             <div className="modal-actions">
               <button type="button" className="btn-secondary" onClick={() => setShowKeyModal(false)}>

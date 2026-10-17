@@ -125,3 +125,82 @@ func TestMemoryStoreQAHistory(t *testing.T) {
 		t.Fatalf("expected question 'What is DocuPilot?', got %q", history[0].Question)
 	}
 }
+
+func TestMemoryStoreUserOperations(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := context.Background()
+
+	user := &User{
+		Email:        "pilot@example.com",
+		PasswordHash: "hashedsecret",
+	}
+
+	if err := s.CreateUser(ctx, user); err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	if user.ID == 0 {
+		t.Fatalf("expected non-zero user ID, got %d", user.ID)
+	}
+
+	// Reject duplicate email
+	dupUser := &User{
+		Email:        "pilot@example.com",
+		PasswordHash: "anothersecret",
+	}
+	if err := s.CreateUser(ctx, dupUser); err != ErrUserAlreadyExists {
+		t.Fatalf("expected ErrUserAlreadyExists, got %v", err)
+	}
+
+	// Lookup by email
+	byEmail, err := s.GetUserByEmail(ctx, "pilot@example.com")
+	if err != nil {
+		t.Fatalf("failed to find user by email: %v", err)
+	}
+	if byEmail.ID != user.ID {
+		t.Fatalf("expected user ID %d, got %d", user.ID, byEmail.ID)
+	}
+
+	// Lookup by ID
+	byID, err := s.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("failed to find user by ID: %v", err)
+	}
+	if byID.Email != "pilot@example.com" {
+		t.Fatalf("expected email pilot@example.com, got %q", byID.Email)
+	}
+
+	// Non-existent user
+	if _, err := s.GetUserByID(ctx, 9999); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound for missing user, got %v", err)
+	}
+}
+
+func TestMemoryStoreUserDocumentIsolation(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := context.Background()
+
+	u1ID := int64(10)
+	u2ID := int64(20)
+
+	doc1 := &Document{Filename: "u1_notes.pdf", UserID: &u1ID, Content: "Notes 1"}
+	doc2 := &Document{Filename: "u2_report.pdf", UserID: &u2ID, Content: "Report 2"}
+	_ = s.SaveDocument(ctx, doc1)
+	_ = s.SaveDocument(ctx, doc2)
+
+	u1Docs, err := s.ListDocumentsByUser(ctx, u1ID)
+	if err != nil {
+		t.Fatalf("failed to list user 1 docs: %v", err)
+	}
+	if len(u1Docs) != 1 || u1Docs[0].Filename != "u1_notes.pdf" {
+		t.Fatalf("expected 1 doc for user 1, got %v", u1Docs)
+	}
+
+	u2Docs, err := s.ListDocumentsByUser(ctx, u2ID)
+	if err != nil {
+		t.Fatalf("failed to list user 2 docs: %v", err)
+	}
+	if len(u2Docs) != 1 || u2Docs[0].Filename != "u2_report.pdf" {
+		t.Fatalf("expected 1 doc for user 2, got %v", u2Docs)
+	}
+}

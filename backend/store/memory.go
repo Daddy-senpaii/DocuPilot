@@ -14,20 +14,26 @@ type MemoryStore struct {
 	nextDocID    int64
 	nextChunkID  int64
 	nextQAID     int64
+	nextUserID   int64
 	documents    map[int64]*Document
 	chunks       map[int64][]Chunk
 	qaHistory    []QAHistory
+	users        map[int64]*User
+	usersByEmail map[string]*User
 }
 
 // NewMemoryStore creates a thread-safe in-memory store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		nextDocID:   1,
-		nextChunkID: 1,
-		nextQAID:    1,
-		documents:   make(map[int64]*Document),
-		chunks:      make(map[int64][]Chunk),
-		qaHistory:   make([]QAHistory, 0),
+		nextDocID:    1,
+		nextChunkID:  1,
+		nextQAID:     1,
+		nextUserID:   1,
+		documents:    make(map[int64]*Document),
+		chunks:       make(map[int64][]Chunk),
+		qaHistory:    make([]QAHistory, 0),
+		users:        make(map[int64]*User),
+		usersByEmail: make(map[string]*User),
 	}
 }
 
@@ -197,6 +203,72 @@ func (m *MemoryStore) ListQAByDocument(_ context.Context, docID *int64) ([]QAHis
 		}
 	}
 
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+
+	return result, nil
+}
+
+func (m *MemoryStore) CreateUser(_ context.Context, user *User) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.usersByEmail[user.Email]; exists {
+		return ErrUserAlreadyExists
+	}
+
+	if user.ID == 0 {
+		user.ID = m.nextUserID
+		m.nextUserID++
+	}
+	if user.CreatedAt.IsZero() {
+		user.CreatedAt = time.Now()
+	}
+
+	userCopy := *user
+	m.users[user.ID] = &userCopy
+	m.usersByEmail[user.Email] = &userCopy
+	return nil
+}
+
+func (m *MemoryStore) GetUserByEmail(_ context.Context, email string) (*User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	user, exists := m.usersByEmail[email]
+	if !exists {
+		return nil, ErrNotFound
+	}
+	userCopy := *user
+	return &userCopy, nil
+}
+
+func (m *MemoryStore) GetUserByID(_ context.Context, id int64) (*User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	user, exists := m.users[id]
+	if !exists {
+		return nil, ErrNotFound
+	}
+	userCopy := *user
+	return &userCopy, nil
+}
+
+func (m *MemoryStore) ListDocumentsByUser(_ context.Context, userID int64) ([]*Document, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]*Document, 0)
+	for _, doc := range m.documents {
+		if doc.UserID != nil && *doc.UserID == userID {
+			docCopy := *doc
+			result = append(result, &docCopy)
+		}
+	}
+
+	// Sort newest first
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].CreatedAt.After(result[j].CreatedAt)
 	})

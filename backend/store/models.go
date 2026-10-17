@@ -2,9 +2,18 @@ package store
 
 import "time"
 
+// User represents an authenticated DocuPilot user account.
+type User struct {
+	ID           int64     `json:"id"`
+	Email        string    `json:"email"`
+	PasswordHash string    `json:"-"` // Omitted from JSON for security
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 // Document represents an uploaded or stored document.
 type Document struct {
 	ID        int64     `json:"id"`
+	UserID    *int64    `json:"user_id,omitempty"`
 	Filename  string    `json:"filename"`
 	Content   string    `json:"content"`
 	CharCount int       `json:"char_count"`
@@ -30,6 +39,7 @@ type ScoredChunk struct {
 // QAHistory represents a past question and answer entry.
 type QAHistory struct {
 	ID         int64     `json:"id"`
+	UserID     *int64    `json:"user_id,omitempty"`
 	DocumentID *int64    `json:"document_id,omitempty"`
 	Question   string    `json:"question"`
 	Answer     string    `json:"answer"`

@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"docupilot/backend/ai"
@@ -264,5 +265,142 @@ func TestDocumentsCRUD(t *testing.T) {
 	env.router.ServeHTTP(wDel, reqDel)
 	if wDel.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", wDel.Code)
+	}
+}
+
+func TestAuthEndpointsAndUserIsolation(t *testing.T) {
+	env, cleanup := setupTestRouter(nil)
+	defer cleanup()
+
+	// 1. Weak password registration should fail (400)
+	weakPayload, _ := json.Marshal(RegisterRequest{Email: "user@example.com", Password: "123"})
+	reqWeak, _ := http.NewRequest(http.MethodPost, "/api/auth/register", bytes.NewBuffer(weakPayload))
+	reqWeak.Header.Set("Content-Type", "application/json")
+	wWeak := httptest.NewRecorder()
+	env.router.ServeHTTP(wWeak, reqWeak)
+	if wWeak.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for weak password, got %d", wWeak.Code)
+	}
+
+	// 2. Successful registration for User 1
+	u1Payload, _ := json.Marshal(RegisterRequest{Email: "user1@example.com", Password: "SecurePassword1!"})
+	reqU1Reg, _ := http.NewRequest(http.MethodPost, "/api/auth/register", bytes.NewBuffer(u1Payload))
+	reqU1Reg.Header.Set("Content-Type", "application/json")
+	wU1Reg := httptest.NewRecorder()
+	env.router.ServeHTTP(wU1Reg, reqU1Reg)
+	if wU1Reg.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for user 1 registration, got %d. Body: %s", wU1Reg.Code, wU1Reg.Body.String())
+	}
+
+	var u1Auth AuthResponse
+	_ = json.Unmarshal(wU1Reg.Body.Bytes(), &u1Auth)
+	if u1Auth.Token == "" || u1Auth.User == nil || u1Auth.User.Email != "user1@example.com" {
+		t.Fatalf("invalid auth response for user 1: %+v", u1Auth)
+	}
+
+	// 3. Duplicate email registration should fail (409 Conflict)
+	reqDup, _ := http.NewRequest(http.MethodPost, "/api/auth/register", bytes.NewBuffer(u1Payload))
+	reqDup.Header.Set("Content-Type", "application/json")
+	wDup := httptest.NewRecorder()
+	env.router.ServeHTTP(wDup, reqDup)
+	if wDup.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for duplicate registration, got %d", wDup.Code)
+	}
+
+	// 4. Successful login
+	loginPayload, _ := json.Marshal(LoginRequest{Email: "user1@example.com", Password: "SecurePassword1!"})
+	reqLogin, _ := http.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBuffer(loginPayload))
+	reqLogin.Header.Set("Content-Type", "application/json")
+	wLogin := httptest.NewRecorder()
+	env.router.ServeHTTP(wLogin, reqLogin)
+	if wLogin.Code != http.StatusOK {
+		t.Fatalf("expected 200 for login, got %d", wLogin.Code)
+	}
+
+	// 5. Failed login with wrong password (401)
+	badLoginPayload, _ := json.Marshal(LoginRequest{Email: "user1@example.com", Password: "WrongPassword1!"})
+	reqBadLogin, _ := http.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBuffer(badLoginPayload))
+	reqBadLogin.Header.Set("Content-Type", "application/json")
+	wBadLogin := httptest.NewRecorder()
+	env.router.ServeHTTP(wBadLogin, reqBadLogin)
+	if wBadLogin.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for bad login, got %d", wBadLogin.Code)
+	}
+
+	// 6. Access /api/auth/me without token (401)
+	reqMeNoAuth, _ := http.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	wMeNoAuth := httptest.NewRecorder()
+	env.router.ServeHTTP(wMeNoAuth, reqMeNoAuth)
+	if wMeNoAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated /me, got %d", wMeNoAuth.Code)
+	}
+
+	// 7. Access /api/auth/me with User 1 token (200)
+	reqMeAuth, _ := http.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	reqMeAuth.Header.Set("Authorization", "Bearer "+u1Auth.Token)
+	wMeAuth := httptest.NewRecorder()
+	env.router.ServeHTTP(wMeAuth, reqMeAuth)
+	if wMeAuth.Code != http.StatusOK {
+		t.Fatalf("expected 200 for authenticated /me, got %d", wMeAuth.Code)
+	}
+
+	// 8. Register User 2
+	u2Payload, _ := json.Marshal(RegisterRequest{Email: "user2@example.com", Password: "SecurePassword2!"})
+	reqU2Reg, _ := http.NewRequest(http.MethodPost, "/api/auth/register", bytes.NewBuffer(u2Payload))
+	reqU2Reg.Header.Set("Content-Type", "application/json")
+	wU2Reg := httptest.NewRecorder()
+	env.router.ServeHTTP(wU2Reg, reqU2Reg)
+	var u2Auth AuthResponse
+	_ = json.Unmarshal(wU2Reg.Body.Bytes(), &u2Auth)
+
+	// 9. User 1 uploads a document
+	pdfContent := []byte("%PDF-1.4 user1 document content")
+	reqUp1, _ := createMultipartRequest("file", "user1_doc.pdf", pdfContent)
+	reqUp1.Header.Set("Authorization", "Bearer "+u1Auth.Token)
+	wUp1 := httptest.NewRecorder()
+	env.router.ServeHTTP(wUp1, reqUp1)
+	if wUp1.Code != http.StatusOK {
+		t.Fatalf("expected 200 for user 1 upload, got %d", wUp1.Code)
+	}
+	var upRes UploadResponse
+	_ = json.Unmarshal(wUp1.Body.Bytes(), &upRes)
+	u1DocID := upRes.ID
+
+	// 10. User 2 lists documents: must NOT see User 1's document!
+	reqListU2, _ := http.NewRequest(http.MethodGet, "/api/documents", nil)
+	reqListU2.Header.Set("Authorization", "Bearer "+u2Auth.Token)
+	wListU2 := httptest.NewRecorder()
+	env.router.ServeHTTP(wListU2, reqListU2)
+	var u2Docs []*store.Document
+	_ = json.Unmarshal(wListU2.Body.Bytes(), &u2Docs)
+	if len(u2Docs) != 0 {
+		t.Fatalf("user 2 should see 0 documents, but saw %d", len(u2Docs))
+	}
+
+	// 11. User 2 attempts to GET User 1's document: must be rejected with 403 Forbidden!
+	reqGetOther, _ := http.NewRequest(http.MethodGet, "/api/documents/"+strconv.FormatInt(u1DocID, 10), nil)
+	reqGetOther.Header.Set("Authorization", "Bearer "+u2Auth.Token)
+	wGetOther := httptest.NewRecorder()
+	env.router.ServeHTTP(wGetOther, reqGetOther)
+	if wGetOther.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden when accessing another user's document, got %d", wGetOther.Code)
+	}
+
+	// 12. User 2 attempts to DELETE User 1's document: must be rejected with 403 Forbidden!
+	reqDelOther, _ := http.NewRequest(http.MethodDelete, "/api/documents/"+strconv.FormatInt(u1DocID, 10), nil)
+	reqDelOther.Header.Set("Authorization", "Bearer "+u2Auth.Token)
+	wDelOther := httptest.NewRecorder()
+	env.router.ServeHTTP(wDelOther, reqDelOther)
+	if wDelOther.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden when deleting another user's document, got %d", wDelOther.Code)
+	}
+
+	// 13. User 1 CAN delete their own document (200)
+	reqDelOwn, _ := http.NewRequest(http.MethodDelete, "/api/documents/"+strconv.FormatInt(u1DocID, 10), nil)
+	reqDelOwn.Header.Set("Authorization", "Bearer "+u1Auth.Token)
+	wDelOwn := httptest.NewRecorder()
+	env.router.ServeHTTP(wDelOwn, reqDelOwn)
+	if wDelOwn.Code != http.StatusOK {
+		t.Fatalf("expected 200 when deleting own document, got %d", wDelOwn.Code)
 	}
 }

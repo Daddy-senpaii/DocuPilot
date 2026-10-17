@@ -11,12 +11,33 @@ import (
 	"strconv"
 	"strings"
 
+	"time"
+
 	"docupilot/backend/ai"
+	"docupilot/backend/auth"
 	"docupilot/backend/extractor"
 	"docupilot/backend/jobs"
 	"docupilot/backend/store"
 	"github.com/gin-gonic/gin"
 )
+
+// RegisterRequest represents the user signup payload.
+type RegisterRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// LoginRequest represents the user signin payload.
+type LoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// AuthResponse represents the authentication response containing a JWT token and user profile.
+type AuthResponse struct {
+	Token string      `json:"token"`
+	User  *store.User `json:"user"`
+}
 
 // AskRequest represents the user request payload containing text context or a document ID and a question.
 type AskRequest struct {
@@ -73,12 +94,15 @@ func loadEnv(filepaths ...string) {
 	}
 }
 
-// corsMiddleware sets headers to allow requests from local frontend development servers.
+// corsMiddleware sets headers to allow requests from local frontend development servers and sets security headers.
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Gemini-Api-Key")
+		c.Writer.Header().Set("X-Content-Type-Options", "nosniff")
+		c.Writer.Header().Set("X-Frame-Options", "DENY")
+		c.Writer.Header().Set("X-XSS-Protection", "1; mode=block")
 
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -96,7 +120,27 @@ func SetupRouter(
 	pdfExtractor extractor.TextExtractor,
 	st store.Store,
 	processor *jobs.DocumentProcessor,
+	authParams ...any,
 ) *gin.Engine {
+	var jwtManager *auth.JWTManager
+	var limiter *auth.IPRateLimiter
+
+	for _, param := range authParams {
+		switch p := param.(type) {
+		case *auth.JWTManager:
+			jwtManager = p
+		case *auth.IPRateLimiter:
+			limiter = p
+		}
+	}
+
+	if jwtManager == nil {
+		jwtManager = auth.NewJWTManager("docupilot-default-development-secret-key-32b!", 24*time.Hour)
+	}
+	if limiter == nil {
+		limiter = auth.NewIPRateLimiter(5 * time.Minute)
+	}
+
 	r := gin.Default()
 	r.Use(corsMiddleware())
 	r.MaxMultipartMemory = maxUploadSize
@@ -106,18 +150,148 @@ func SetupRouter(
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// List saved documents
-	r.GET("/api/documents", func(c *gin.Context) {
-		docs, err := st.ListDocuments(c.Request.Context())
+	// --- Authentication Endpoints ---
+
+	// User Registration (Rate limited: max 10 per minute per IP)
+	r.POST("/api/auth/register", func(c *gin.Context) {
+		if !limiter.Allow(c.ClientIP(), 10, 1*time.Minute) {
+			c.JSON(http.StatusTooManyRequests, ErrorResponse{Error: "Too many registration attempts. Please wait a minute."})
+			return
+		}
+
+		var req RegisterRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid JSON request payload"})
+			return
+		}
+
+		email, err := auth.NormalizeAndValidateEmail(req.Email)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+			return
+		}
+
+		hashedPassword, err := auth.HashPassword(req.Password)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+			return
+		}
+
+		user := &store.User{
+			Email:        email,
+			PasswordHash: hashedPassword,
+		}
+
+		if err := st.CreateUser(c.Request.Context(), user); err != nil {
+			if err == store.ErrUserAlreadyExists {
+				c.JSON(http.StatusConflict, ErrorResponse{Error: "An account with this email address already exists"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to create user account"})
+			return
+		}
+
+		token, err := jwtManager.GenerateToken(user)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to generate authentication token"})
+			return
+		}
+
+		c.JSON(http.StatusCreated, AuthResponse{
+			Token: token,
+			User:  user,
+		})
+	})
+
+	// User Login (Rate limited: max 5 per minute per IP to mitigate brute force)
+	r.POST("/api/auth/login", func(c *gin.Context) {
+		if !limiter.Allow(c.ClientIP(), 5, 1*time.Minute) {
+			c.JSON(http.StatusTooManyRequests, ErrorResponse{Error: "Too many login attempts. Please wait a minute."})
+			return
+		}
+
+		var req LoginRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid JSON request payload"})
+			return
+		}
+
+		email, err := auth.NormalizeAndValidateEmail(req.Email)
+		if err != nil {
+			auth.DummyPasswordCheck(req.Password)
+			c.JSON(http.StatusUnauthorized, ErrorResponse{Error: "Invalid email or password"})
+			return
+		}
+
+		user, err := st.GetUserByEmail(c.Request.Context(), email)
+		if err != nil {
+			// Anti-timing attack check
+			auth.DummyPasswordCheck(req.Password)
+			c.JSON(http.StatusUnauthorized, ErrorResponse{Error: "Invalid email or password"})
+			return
+		}
+
+		if !auth.CheckPassword(user.PasswordHash, req.Password) {
+			c.JSON(http.StatusUnauthorized, ErrorResponse{Error: "Invalid email or password"})
+			return
+		}
+
+		token, err := jwtManager.GenerateToken(user)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to generate authentication token"})
+			return
+		}
+
+		c.JSON(http.StatusOK, AuthResponse{
+			Token: token,
+			User:  user,
+		})
+	})
+
+	// Current authenticated user profile
+	r.GET("/api/auth/me", auth.AuthMiddleware(jwtManager, true), func(c *gin.Context) {
+		userID, ok := auth.GetAuthUserID(c)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, ErrorResponse{Error: "Unauthorized"})
+			return
+		}
+
+		user, err := st.GetUserByID(c.Request.Context(), userID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, ErrorResponse{Error: "User not found"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"user": user})
+	})
+
+	// --- Scoped Document & Question Answering Endpoints ---
+	api := r.Group("/api")
+	api.Use(auth.AuthMiddleware(jwtManager, false))
+
+	// List saved documents (scoped to authenticated user if signed in)
+	api.GET("/documents", func(c *gin.Context) {
+		var docs []*store.Document
+		var err error
+
+		if userID, ok := auth.GetAuthUserID(c); ok {
+			docs, err = st.ListDocumentsByUser(c.Request.Context(), userID)
+		} else {
+			docs, err = st.ListDocuments(c.Request.Context())
+		}
+
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
+		}
+		if docs == nil {
+			docs = []*store.Document{}
 		}
 		c.JSON(http.StatusOK, docs)
 	})
 
 	// Get single document with QA history
-	r.GET("/api/documents/:id", func(c *gin.Context) {
+	api.GET("/documents/:id", func(c *gin.Context) {
 		idStr := c.Param("id")
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
@@ -135,6 +309,12 @@ func SetupRouter(
 			return
 		}
 
+		// Security: prevent accessing documents owned by other users
+		if userID, ok := auth.GetAuthUserID(c); ok && doc.UserID != nil && *doc.UserID != userID {
+			c.JSON(http.StatusForbidden, ErrorResponse{Error: "Access denied to this document"})
+			return
+		}
+
 		qaList, _ := st.ListQAByDocument(c.Request.Context(), &id)
 		c.JSON(http.StatusOK, gin.H{
 			"document": doc,
@@ -143,7 +323,7 @@ func SetupRouter(
 	})
 
 	// Delete document
-	r.DELETE("/api/documents/:id", func(c *gin.Context) {
+	api.DELETE("/documents/:id", func(c *gin.Context) {
 		idStr := c.Param("id")
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
@@ -151,11 +331,23 @@ func SetupRouter(
 			return
 		}
 
+		doc, err := st.GetDocument(c.Request.Context(), id)
+		if err == store.ErrNotFound {
+			c.JSON(http.StatusNotFound, ErrorResponse{Error: "Document not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+			return
+		}
+
+		// Security: prevent deleting documents owned by other users
+		if userID, ok := auth.GetAuthUserID(c); ok && doc.UserID != nil && *doc.UserID != userID {
+			c.JSON(http.StatusForbidden, ErrorResponse{Error: "Access denied to this document"})
+			return
+		}
+
 		if err := st.DeleteDocument(c.Request.Context(), id); err != nil {
-			if err == store.ErrNotFound {
-				c.JSON(http.StatusNotFound, ErrorResponse{Error: "Document not found"})
-				return
-			}
 			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
 		}
@@ -164,7 +356,7 @@ func SetupRouter(
 	})
 
 	// Question answering endpoint (Semantic Search + AI)
-	r.POST("/api/ask", func(c *gin.Context) {
+	api.POST("/ask", func(c *gin.Context) {
 		var req AskRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid JSON request payload"})
@@ -195,6 +387,12 @@ func SetupRouter(
 			doc, err := st.GetDocument(c.Request.Context(), *req.DocumentID)
 			if err != nil {
 				c.JSON(http.StatusNotFound, ErrorResponse{Error: "Specified document not found"})
+				return
+			}
+
+			// Security: verify user authorization for this document
+			if userID, ok := auth.GetAuthUserID(c); ok && doc.UserID != nil && *doc.UserID != userID {
+				c.JSON(http.StatusForbidden, ErrorResponse{Error: "Access denied to this document"})
 				return
 			}
 
@@ -233,12 +431,16 @@ func SetupRouter(
 			return
 		}
 
-		// Save QA entry into history
-		_ = st.SaveQA(c.Request.Context(), &store.QAHistory{
+		// Save QA entry into history with user ownership if authenticated
+		qa := &store.QAHistory{
 			DocumentID: req.DocumentID,
 			Question:   trimmedQuestion,
 			Answer:     answer,
-		})
+		}
+		if userID, ok := auth.GetAuthUserID(c); ok {
+			qa.UserID = &userID
+		}
+		_ = st.SaveQA(c.Request.Context(), qa)
 
 		c.JSON(http.StatusOK, AskResponse{
 			Answer:  answer,
@@ -247,7 +449,7 @@ func SetupRouter(
 	})
 
 	// PDF document upload and text extraction endpoint
-	r.POST("/api/upload", func(c *gin.Context) {
+	api.POST("/upload", func(c *gin.Context) {
 		fileHeader, err := c.FormFile("file")
 		if err != nil {
 			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Please choose a PDF file to upload"})
@@ -289,12 +491,15 @@ func SetupRouter(
 			return
 		}
 
-		// Save document record
+		// Save document record with user ownership if authenticated
 		doc := &store.Document{
 			Filename:  fileHeader.Filename,
 			Content:   text,
 			CharCount: len(text),
 			Status:    "processing",
+		}
+		if userID, ok := auth.GetAuthUserID(c); ok {
+			doc.UserID = &userID
 		}
 
 		if err := st.SaveDocument(c.Request.Context(), doc); err != nil {
@@ -365,7 +570,14 @@ func main() {
 	defer processor.Close()
 
 	pdfExtractor := extractor.NewPDFExtractor()
-	router := SetupRouter(provider, embedder, pdfExtractor, st, processor)
+
+	// Initialize JWT manager and rate limiter
+	jwtSecret := os.Getenv("JWT_SECRET")
+	jwtManager := auth.NewJWTManager(jwtSecret, 24*time.Hour)
+	rateLimiter := auth.NewIPRateLimiter(5 * time.Minute)
+	defer rateLimiter.Close()
+
+	router := SetupRouter(provider, embedder, pdfExtractor, st, processor, jwtManager, rateLimiter)
 
 	log.Printf("Starting DocuPilot backend server on port %s...", port)
 	if err := router.Run(":" + port); err != nil {

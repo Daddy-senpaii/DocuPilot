@@ -39,14 +39,22 @@ func (p *PostgresStore) migrate() error {
 	_, _ = p.db.Exec(`CREATE EXTENSION IF NOT EXISTS vector;`)
 
 	queries := []string{
+		`CREATE TABLE IF NOT EXISTS users (
+			id BIGSERIAL PRIMARY KEY,
+			email VARCHAR(255) UNIQUE NOT NULL,
+			password_hash VARCHAR(255) NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);`,
 		`CREATE TABLE IF NOT EXISTS documents (
 			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
 			filename VARCHAR(255) NOT NULL,
 			content TEXT NOT NULL,
 			char_count INT NOT NULL,
 			status VARCHAR(50) NOT NULL DEFAULT 'ready',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);`,
+		`ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE CASCADE;`,
 		`CREATE TABLE IF NOT EXISTS document_chunks (
 			id BIGSERIAL PRIMARY KEY,
 			document_id BIGINT REFERENCES documents(id) ON DELETE CASCADE,
@@ -56,11 +64,13 @@ func (p *PostgresStore) migrate() error {
 		);`,
 		`CREATE TABLE IF NOT EXISTS qa_history (
 			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
 			document_id BIGINT REFERENCES documents(id) ON DELETE CASCADE,
 			question TEXT NOT NULL,
 			answer TEXT NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);`,
+		`ALTER TABLE qa_history ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE CASCADE;`,
 	}
 
 	for _, q := range queries {
@@ -72,21 +82,21 @@ func (p *PostgresStore) migrate() error {
 }
 
 func (p *PostgresStore) SaveDocument(ctx context.Context, doc *Document) error {
-	query := `INSERT INTO documents (filename, content, char_count, status, created_at)
-		VALUES ($1, $2, $3, $4, $5) RETURNING id;`
+	query := `INSERT INTO documents (user_id, filename, content, char_count, status, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id;`
 	if doc.Status == "" {
 		doc.Status = "ready"
 	}
 	if doc.CreatedAt.IsZero() {
 		doc.CreatedAt = time.Now()
 	}
-	return p.db.QueryRowContext(ctx, query, doc.Filename, doc.Content, doc.CharCount, doc.Status, doc.CreatedAt).Scan(&doc.ID)
+	return p.db.QueryRowContext(ctx, query, doc.UserID, doc.Filename, doc.Content, doc.CharCount, doc.Status, doc.CreatedAt).Scan(&doc.ID)
 }
 
 func (p *PostgresStore) GetDocument(ctx context.Context, id int64) (*Document, error) {
-	query := `SELECT id, filename, content, char_count, status, created_at FROM documents WHERE id = $1;`
+	query := `SELECT id, user_id, filename, content, char_count, status, created_at FROM documents WHERE id = $1;`
 	doc := &Document{}
-	err := p.db.QueryRowContext(ctx, query, id).Scan(&doc.ID, &doc.Filename, &doc.Content, &doc.CharCount, &doc.Status, &doc.CreatedAt)
+	err := p.db.QueryRowContext(ctx, query, id).Scan(&doc.ID, &doc.UserID, &doc.Filename, &doc.Content, &doc.CharCount, &doc.Status, &doc.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -97,7 +107,7 @@ func (p *PostgresStore) GetDocument(ctx context.Context, id int64) (*Document, e
 }
 
 func (p *PostgresStore) ListDocuments(ctx context.Context) ([]*Document, error) {
-	query := `SELECT id, filename, content, char_count, status, created_at FROM documents ORDER BY created_at DESC;`
+	query := `SELECT id, user_id, filename, content, char_count, status, created_at FROM documents ORDER BY created_at DESC;`
 	rows, err := p.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -107,7 +117,26 @@ func (p *PostgresStore) ListDocuments(ctx context.Context) ([]*Document, error) 
 	var docs []*Document
 	for rows.Next() {
 		doc := &Document{}
-		if err := rows.Scan(&doc.ID, &doc.Filename, &doc.Content, &doc.CharCount, &doc.Status, &doc.CreatedAt); err != nil {
+		if err := rows.Scan(&doc.ID, &doc.UserID, &doc.Filename, &doc.Content, &doc.CharCount, &doc.Status, &doc.CreatedAt); err != nil {
+			return nil, err
+		}
+		docs = append(docs, doc)
+	}
+	return docs, nil
+}
+
+func (p *PostgresStore) ListDocumentsByUser(ctx context.Context, userID int64) ([]*Document, error) {
+	query := `SELECT id, user_id, filename, content, char_count, status, created_at FROM documents WHERE user_id = $1 ORDER BY created_at DESC;`
+	rows, err := p.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var docs []*Document
+	for rows.Next() {
+		doc := &Document{}
+		if err := rows.Scan(&doc.ID, &doc.UserID, &doc.Filename, &doc.Content, &doc.CharCount, &doc.Status, &doc.CreatedAt); err != nil {
 			return nil, err
 		}
 		docs = append(docs, doc)
@@ -215,20 +244,20 @@ func (p *PostgresStore) SearchSimilarChunks(ctx context.Context, docID int64, qu
 }
 
 func (p *PostgresStore) SaveQA(ctx context.Context, qa *QAHistory) error {
-	query := `INSERT INTO qa_history (document_id, question, answer, created_at) VALUES ($1, $2, $3, $4) RETURNING id;`
+	query := `INSERT INTO qa_history (user_id, document_id, question, answer, created_at) VALUES ($1, $2, $3, $4, $5) RETURNING id;`
 	if qa.CreatedAt.IsZero() {
 		qa.CreatedAt = time.Now()
 	}
-	return p.db.QueryRowContext(ctx, query, qa.DocumentID, qa.Question, qa.Answer, qa.CreatedAt).Scan(&qa.ID)
+	return p.db.QueryRowContext(ctx, query, qa.UserID, qa.DocumentID, qa.Question, qa.Answer, qa.CreatedAt).Scan(&qa.ID)
 }
 
 func (p *PostgresStore) ListQAByDocument(ctx context.Context, docID *int64) ([]QAHistory, error) {
 	var rows *sql.Rows
 	var err error
 	if docID != nil {
-		rows, err = p.db.QueryContext(ctx, `SELECT id, document_id, question, answer, created_at FROM qa_history WHERE document_id = $1 ORDER BY created_at DESC;`, *docID)
+		rows, err = p.db.QueryContext(ctx, `SELECT id, user_id, document_id, question, answer, created_at FROM qa_history WHERE document_id = $1 ORDER BY created_at DESC;`, *docID)
 	} else {
-		rows, err = p.db.QueryContext(ctx, `SELECT id, document_id, question, answer, created_at FROM qa_history ORDER BY created_at DESC;`)
+		rows, err = p.db.QueryContext(ctx, `SELECT id, user_id, document_id, question, answer, created_at FROM qa_history ORDER BY created_at DESC;`)
 	}
 	if err != nil {
 		return nil, err
@@ -238,12 +267,53 @@ func (p *PostgresStore) ListQAByDocument(ctx context.Context, docID *int64) ([]Q
 	var list []QAHistory
 	for rows.Next() {
 		var qa QAHistory
-		if err := rows.Scan(&qa.ID, &qa.DocumentID, &qa.Question, &qa.Answer, &qa.CreatedAt); err != nil {
+		if err := rows.Scan(&qa.ID, &qa.UserID, &qa.DocumentID, &qa.Question, &qa.Answer, &qa.CreatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, qa)
 	}
 	return list, nil
+}
+
+func (p *PostgresStore) CreateUser(ctx context.Context, user *User) error {
+	query := `INSERT INTO users (email, password_hash, created_at) VALUES ($1, $2, $3) RETURNING id;`
+	if user.CreatedAt.IsZero() {
+		user.CreatedAt = time.Now()
+	}
+	err := p.db.QueryRowContext(ctx, query, user.Email, user.PasswordHash, user.CreatedAt).Scan(&user.ID)
+	if err != nil {
+		if strings.Contains(err.Error(), "unique constraint") || strings.Contains(err.Error(), "duplicate key") {
+			return ErrUserAlreadyExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (p *PostgresStore) GetUserByEmail(ctx context.Context, email string) (*User, error) {
+	query := `SELECT id, email, password_hash, created_at FROM users WHERE email = $1;`
+	user := &User{}
+	err := p.db.QueryRowContext(ctx, query, email).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+func (p *PostgresStore) GetUserByID(ctx context.Context, id int64) (*User, error) {
+	query := `SELECT id, email, password_hash, created_at FROM users WHERE id = $1;`
+	user := &User{}
+	err := p.db.QueryRowContext(ctx, query, id).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
 }
 
 func (p *PostgresStore) Close() error {
