@@ -99,9 +99,9 @@ func TestConvertValidationErrors(t *testing.T) {
 }
 
 func TestConvertMissingBinaryError(t *testing.T) {
-	// Empty binary and no env var
+	// Disabled binary simulates missing LibreOffice on system
 	c := &LibreOfficeConverter{
-		binaryPath: "",
+		binaryPath: "disabled",
 		runner:     DefaultCommandRunner,
 		timeout:    10 * time.Second,
 	}
@@ -214,9 +214,9 @@ func TestDocxToTextFallback(t *testing.T) {
 	}
 	_ = zipWriter.Close()
 
-	// Converter with no binary found
+	// Converter with disabled binary to force Go fallback
 	c := &LibreOfficeConverter{
-		binaryPath: "",
+		binaryPath: "disabled",
 		runner:     DefaultCommandRunner,
 		timeout:    10 * time.Second,
 	}

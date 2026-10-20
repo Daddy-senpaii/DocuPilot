@@ -180,8 +180,18 @@ func (c *LibreOfficeConverter) Convert(ctx context.Context, req ConvertRequest) 
 		return nil, fmt.Errorf("conversion from '%s' to '%s' is not supported", src, tgt)
 	}
 
+	bin := c.binaryPath
+	if bin == "" {
+		bin = findLibreOfficeBinary("")
+		if bin != "" {
+			c.binaryPath = bin
+		}
+	} else if bin == "disabled" {
+		bin = ""
+	}
+
 	// Direct Go fallback for DOCX to TXT if LibreOffice is not installed
-	if src == FormatDOCX && tgt == FormatTXT && c.binaryPath == "" {
+	if src == FormatDOCX && tgt == FormatTXT && bin == "" {
 		extractedTxt, err := extractTextFromDocxZip(req.Data)
 		if err == nil && len(extractedTxt) > 0 {
 			outName := changeExtension(req.Filename, FormatTXT)
@@ -193,7 +203,7 @@ func (c *LibreOfficeConverter) Convert(ctx context.Context, req ConvertRequest) 
 		}
 	}
 
-	if c.binaryPath == "" {
+	if bin == "" {
 		return nil, errors.New("LibreOffice is required for conversions but was not found. Please install it with 'sudo apt install libreoffice' or set LIBREOFFICE_PATH")
 	}
 
@@ -238,7 +248,7 @@ func (c *LibreOfficeConverter) Convert(ctx context.Context, req ConvertRequest) 
 
 	args = append(args, "--outdir", tmpDir, inputPath)
 
-	outputBytes, err := c.runner(ctxTimeout, c.binaryPath, args...)
+	outputBytes, err := c.runner(ctxTimeout, bin, args...)
 	if err != nil {
 		errMsg := strings.TrimSpace(string(outputBytes))
 		if errMsg != "" {
