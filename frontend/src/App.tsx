@@ -23,8 +23,27 @@ interface QAItem {
   created_at: string;
 }
 
+interface ConversionPair {
+  source_format: string;
+  target_format: string;
+  title: string;
+  description: string;
+  icon: string;
+}
+
+const DEFAULT_CONVERSION_PAIRS: ConversionPair[] = [
+  { source_format: 'pdf', target_format: 'docx', title: 'PDF to Word', description: 'Convert PDF into editable Word document (.docx)', icon: '📄 ➡️ 📝' },
+  { source_format: 'docx', target_format: 'pdf', title: 'Word to PDF', description: 'Render Word document (.docx) into standard PDF', icon: '📝 ➡️ 📄' },
+  { source_format: 'pdf', target_format: 'xlsx', title: 'PDF to Excel', description: 'Convert PDF tables into Excel spreadsheet (.xlsx)', icon: '📄 ➡️ 📊' },
+  { source_format: 'xlsx', target_format: 'pdf', title: 'Excel to PDF', description: 'Render Excel spreadsheet (.xlsx) into clean PDF', icon: '📊 ➡️ 📄' },
+  { source_format: 'pdf', target_format: 'pptx', title: 'PDF to PowerPoint', description: 'Transform PDF pages into presentation slides (.pptx)', icon: '📄 ➡️ 📽️' },
+  { source_format: 'pptx', target_format: 'pdf', title: 'PowerPoint to PDF', description: 'Render presentation slides (.pptx) into standard PDF deck', icon: '📽 ➡️ 📄' },
+  { source_format: 'docx', target_format: 'txt', title: 'Word to Text', description: 'Extract plain text from Word document (.docx)', icon: '📝 ➡️ 📋' },
+  { source_format: 'txt', target_format: 'pdf', title: 'Text to PDF', description: 'Typeset plain text (.txt) into paginated PDF document', icon: '📋 ➡️ 📄' },
+];
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'upload' | 'paste' | 'library'>('upload');
+  const [activeTab, setActiveTab] = useState<'upload' | 'paste' | 'library' | 'converter'>('upload');
   const [text, setText] = useState('');
   const [activeDoc, setActiveDoc] = useState<DocumentItem | null>(null);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -62,6 +81,22 @@ export default function App() {
   const [tempKey, setTempKey] = useState<string>(apiKey);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Document Converter state
+  const [convFile, setConvFile] = useState<File | null>(null);
+  const [selectedPair, setSelectedPair] = useState<ConversionPair>(DEFAULT_CONVERSION_PAIRS[0]);
+  const [convLoading, setConvLoading] = useState<boolean>(false);
+  const [convError, setConvError] = useState<string | null>(null);
+  const [convResult, setConvResult] = useState<{
+    filename: string;
+    blob: Blob;
+    blobUrl: string;
+    size: number;
+    targetFormat: string;
+    textPreview?: string;
+  } | null>(null);
+  const [convDragOver, setConvDragOver] = useState<boolean>(false);
+  const convFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Builds standard headers including optional Bearer JWT token and Gemini API key
   const getAuthHeaders = useCallback((additionalHeaders: Record<string, string> = {}) => {
@@ -195,10 +230,7 @@ export default function App() {
     setShowKeyModal(false);
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const uploadPdfFile = async (file: File) => {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
       setError('Please select a valid PDF file (.pdf).');
       return;
@@ -242,6 +274,7 @@ export default function App() {
       setAnswer(null);
       setSources([]);
       fetchDocuments();
+      setActiveTab('upload');
     } catch (err: unknown) {
       if (err instanceof Error) {
         setError(err.message);
@@ -253,6 +286,111 @@ export default function App() {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      await uploadPdfFile(file);
+    }
+  };
+
+  const handleConverterFileSelect = (file: File) => {
+    setConvFile(file);
+    setConvError(null);
+    setConvResult(null);
+
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    const matchingPair = DEFAULT_CONVERSION_PAIRS.find((p) => p.source_format === ext);
+    if (matchingPair) {
+      setSelectedPair(matchingPair);
+    }
+  };
+
+  const handleRunConversion = async () => {
+    if (!convFile) {
+      setConvError('Please choose a document file to convert.');
+      return;
+    }
+
+    setConvLoading(true);
+    setConvError(null);
+    setConvResult(null);
+
+    const formData = new FormData();
+    formData.append('file', convFile);
+    formData.append('source_format', selectedPair.source_format);
+    formData.append('target_format', selectedPair.target_format);
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/convert`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: formData,
+      });
+
+      if (!res.ok) {
+        let errorMsg = 'Conversion failed.';
+        try {
+          const errData = await res.json();
+          if (errData.error) errorMsg = errData.error;
+        } catch {
+          // ignore
+        }
+        throw new Error(errorMsg);
+      }
+
+      const blob = await res.blob();
+      let outputFilename = '';
+      const disp = res.headers.get('content-disposition');
+      if (disp && disp.includes('filename=')) {
+        const match = disp.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) {
+          outputFilename = match[1];
+        }
+      }
+      if (!outputFilename) {
+        const base = convFile.name.substring(0, convFile.name.lastIndexOf('.')) || convFile.name;
+        outputFilename = `${base}.${selectedPair.target_format}`;
+      }
+
+      let textPreview: string | undefined;
+      if (selectedPair.target_format === 'txt') {
+        textPreview = await blob.text();
+      }
+
+      const blobUrl = URL.createObjectURL(blob);
+      setConvResult({
+        filename: outputFilename,
+        blob,
+        blobUrl,
+        size: blob.size,
+        targetFormat: selectedPair.target_format,
+        textPreview,
+      });
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setConvError(err.message);
+      } else {
+        setConvError('An unexpected conversion error occurred.');
+      }
+    } finally {
+      setConvLoading(false);
+    }
+  };
+
+  const handleSendConvertedToQA = async () => {
+    if (!convResult) return;
+
+    if (convResult.targetFormat === 'pdf') {
+      const pdfFile = new File([convResult.blob], convResult.filename, { type: 'application/pdf' });
+      await uploadPdfFile(pdfFile);
+    } else if (convResult.targetFormat === 'txt' && convResult.textPreview) {
+      setText(convResult.textPreview);
+      setActiveDoc(null);
+      setActiveTab('paste');
+      setStatusMessage(`Loaded extracted text (${convResult.textPreview.length.toLocaleString()} characters) into Q&A!`);
     }
   };
 
@@ -796,6 +934,13 @@ export default function App() {
           >
             📚 Library ({documents.length})
           </button>
+          <button
+            type="button"
+            className={`tab-btn ${activeTab === 'converter' ? 'active' : ''}`}
+            onClick={() => setActiveTab('converter')}
+          >
+            🔄 File Converter
+          </button>
         </nav>
 
         {error && (
@@ -891,30 +1036,209 @@ export default function App() {
           </div>
         )}
 
-        <hr className="divider" />
+        {activeTab === 'converter' && (
+          <div className="converter-section">
+            <div className="converter-header">
+              <h3>Fast & High-Fidelity Document Converter</h3>
+              <p className="converter-subtitle">
+                Convert between PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), and Text (.txt).
+              </p>
+            </div>
 
-        <form onSubmit={handleAsk}>
-          <div className="form-group">
-            <label htmlFor="question">Ask a question about this document:</label>
-            <input
-              type="text"
-              id="question"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="e.g., What are the main recommendations?"
-              disabled={loading || uploading}
-              required
-            />
+            {/* Quick Conversion Workflows */}
+            <div className="conversion-presets">
+              <span className="presets-label">Choose Conversion:</span>
+              <div className="presets-grid">
+                {DEFAULT_CONVERSION_PAIRS.map((pair) => {
+                  const isSelected =
+                    selectedPair.source_format === pair.source_format &&
+                    selectedPair.target_format === pair.target_format;
+                  return (
+                    <button
+                      key={`${pair.source_format}->${pair.target_format}`}
+                      type="button"
+                      className={`preset-chip ${isSelected ? 'selected' : ''}`}
+                      onClick={() => {
+                        setSelectedPair(pair);
+                        setConvError(null);
+                        setConvResult(null);
+                      }}
+                    >
+                      <span className="preset-icon">{pair.icon}</span>
+                      <span className="preset-title">{pair.title}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Drag & Drop Zone */}
+            <div
+              className={`upload-dropzone converter-dropzone ${convDragOver ? 'drag-over' : ''} ${convFile ? 'has-file' : ''}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setConvDragOver(true);
+              }}
+              onDragLeave={() => setConvDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setConvDragOver(false);
+                const file = e.dataTransfer.files?.[0];
+                if (file) handleConverterFileSelect(file);
+              }}
+              onClick={() => convFileInputRef.current?.click()}
+            >
+              <input
+                ref={convFileInputRef}
+                type="file"
+                accept=".pdf,.docx,.xlsx,.pptx,.txt"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleConverterFileSelect(file);
+                }}
+                disabled={convLoading}
+                style={{ display: 'none' }}
+              />
+
+              <div className="upload-icon">
+                {convFile ? '📑' : '🔄'}
+              </div>
+
+              {convFile ? (
+                <div className="converter-file-details">
+                  <p className="converter-selected-name">
+                    <strong>{convFile.name}</strong>
+                  </p>
+                  <span className="converter-file-size">
+                    {(convFile.size / 1024).toFixed(1)} KB • Source: .{selectedPair.source_format.toUpperCase()}
+                  </span>
+                  <p className="converter-change-hint">Click or drop another file to change</p>
+                </div>
+              ) : (
+                <>
+                  <p className="upload-prompt">
+                    Click or drop your <strong>.{selectedPair.source_format.toUpperCase()}</strong> file here
+                  </p>
+                  <span className="converter-hint">
+                    Accepts .{selectedPair.source_format.toUpperCase()} (up to 10MB)
+                  </span>
+                </>
+              )}
+            </div>
+
+            {/* Target Format Selector & Convert Action */}
+            <div className="converter-action-bar">
+              <div className="format-flow-badge">
+                <span className="flow-badge-part source">.{selectedPair.source_format.toUpperCase()}</span>
+                <span className="flow-arrow">➡️</span>
+                <span className="flow-badge-part target">.{selectedPair.target_format.toUpperCase()}</span>
+              </div>
+
+              <button
+                type="button"
+                className="btn-primary converter-submit-btn"
+                onClick={handleRunConversion}
+                disabled={!convFile || convLoading}
+              >
+                {convLoading ? (
+                  <span className="btn-loading-content">
+                    <span className="spinner" />
+                    Converting Document...
+                  </span>
+                ) : (
+                  `Convert to .${selectedPair.target_format.toUpperCase()}`
+                )}
+              </button>
+            </div>
+
+            {convError && (
+              <div className="alert-error converter-alert" role="alert">
+                <strong>Conversion Error:</strong> {convError}
+                {convError.includes('LibreOffice') && (
+                  <div className="install-hint">
+                    <code>sudo apt update && sudo apt install -y libreoffice</code>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Converted Output Card */}
+            {convResult && (
+              <div className="converter-result-card" aria-live="polite">
+                <div className="result-header">
+                  <span className="result-badge-check">✅</span>
+                  <div>
+                    <h4 className="result-title">Conversion Complete!</h4>
+                    <p className="result-meta">
+                      <strong>{convResult.filename}</strong> ({(convResult.size / 1024).toFixed(1)} KB)
+                    </p>
+                  </div>
+                </div>
+
+                <div className="result-actions">
+                  <a
+                    href={convResult.blobUrl}
+                    download={convResult.filename}
+                    className="btn-download"
+                  >
+                    📥 Download {convResult.filename}
+                  </a>
+
+                  {(convResult.targetFormat === 'pdf' || convResult.targetFormat === 'txt') && (
+                    <button
+                      type="button"
+                      className="btn-chat-doc"
+                      onClick={handleSendConvertedToQA}
+                    >
+                      🤖 Ask Questions in DocuPilot
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => {
+                      setConvFile(null);
+                      setConvResult(null);
+                      setConvError(null);
+                    }}
+                  >
+                    Convert Another
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
+        )}
 
-          <button
-            type="submit"
-            className="btn-primary"
-            disabled={loading || uploading || (!text.trim() && !activeDoc) || !question.trim()}
-          >
-            {loading ? 'Searching & Generating Answer...' : 'Ask DocuPilot'}
-          </button>
-        </form>
+        {activeTab !== 'converter' && (
+          <>
+            <hr className="divider" />
+
+            <form onSubmit={handleAsk}>
+              <div className="form-group">
+                <label htmlFor="question">Ask a question about this document:</label>
+                <input
+                  type="text"
+                  id="question"
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  placeholder="e.g., What are the main recommendations?"
+                  disabled={loading || uploading}
+                  required
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={loading || uploading || (!text.trim() && !activeDoc) || !question.trim()}
+              >
+                {loading ? 'Searching & Generating Answer...' : 'Ask DocuPilot'}
+              </button>
+            </form>
+          </>
+        )}
       </div>
 
       {answer && (
