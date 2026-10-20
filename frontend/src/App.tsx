@@ -42,6 +42,12 @@ const DEFAULT_CONVERSION_PAIRS: ConversionPair[] = [
   { source_format: 'txt', target_format: 'pdf', title: 'Text to PDF', description: 'Typeset plain text (.txt) into paginated PDF document', icon: '📋 ➡️ 📄' },
 ];
 
+const QUICK_PROMPTS = [
+  'Summarize the key takeaways in 3 bullets',
+  'What are the main findings or recommendations?',
+  'Extract any important dates, numbers, or action items',
+];
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'upload' | 'paste' | 'library' | 'converter'>('upload');
   const [text, setText] = useState('');
@@ -52,6 +58,7 @@ export default function App() {
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState<string | null>(null);
   const [sources, setSources] = useState<string[]>([]);
+  const [copiedAnswer, setCopiedAnswer] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -361,13 +368,18 @@ export default function App() {
       }
 
       const blobUrl = URL.createObjectURL(blob);
-      setConvResult({
-        filename: outputFilename,
-        blob,
-        blobUrl,
-        size: blob.size,
-        targetFormat: selectedPair.target_format,
-        textPreview,
+      setConvResult((prev) => {
+        if (prev?.blobUrl) {
+          URL.revokeObjectURL(prev.blobUrl);
+        }
+        return {
+          filename: outputFilename,
+          blob,
+          blobUrl,
+          size: blob.size,
+          targetFormat: selectedPair.target_format,
+          textPreview,
+        };
       });
     } catch (err: unknown) {
       if (err instanceof Error) {
@@ -378,6 +390,13 @@ export default function App() {
     } finally {
       setConvLoading(false);
     }
+  };
+
+  const handleCopyAnswer = () => {
+    if (!answer) return;
+    navigator.clipboard.writeText(answer);
+    setCopiedAnswer(true);
+    setTimeout(() => setCopiedAnswer(false), 2000);
   };
 
   const handleSendConvertedToQA = async () => {
@@ -553,7 +572,13 @@ export default function App() {
     <div className="container">
       <header className="header">
         <div className="header-top">
-          <h1>✈️ DocuPilot</h1>
+          <div className="brand-badge-group">
+            <span className="brand-logo-icon">✈️</span>
+            <div>
+              <h1 className="brand-title">DocuPilot</h1>
+              <p className="brand-tagline">AI PDF Assistant & Document Conversion Studio</p>
+            </div>
+          </div>
           <div className="header-controls">
             <button
               type="button"
@@ -563,7 +588,7 @@ export default function App() {
                 setShowKeyModal(true);
               }}
             >
-              {apiKey ? '🔑 API Key: Configured' : '🔑 Set Gemini API Key'}
+              {apiKey ? '🔑 API Key: Active' : '🔑 Set Gemini API Key'}
             </button>
 
             {currentUser ? (
@@ -591,7 +616,6 @@ export default function App() {
             )}
           </div>
         </div>
-        <p className="badge">AI PDF Assistant • Semantic Search & Vector Retrieval</p>
       </header>
 
       {/* Authentication Modal */}
@@ -940,6 +964,7 @@ export default function App() {
             onClick={() => setActiveTab('converter')}
           >
             🔄 File Converter
+            <span className="tab-pill-badge">NEW</span>
           </button>
         </nav>
 
@@ -1216,6 +1241,25 @@ export default function App() {
             <hr className="divider" />
 
             <form onSubmit={handleAsk}>
+              {(activeDoc || text.trim()) && (
+                <div className="quick-prompts-bar">
+                  <span className="quick-prompts-label">✨ Quick Prompts:</span>
+                  <div className="quick-prompts-list">
+                    {QUICK_PROMPTS.map((prompt, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        className="quick-prompt-btn"
+                        onClick={() => setQuestion(prompt)}
+                        disabled={loading || uploading}
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="form-group">
                 <label htmlFor="question">Ask a question about this document:</label>
                 <input
@@ -1243,7 +1287,17 @@ export default function App() {
 
       {answer && (
         <section className="answer-card" aria-live="polite">
-          <h2>💡 Answer</h2>
+          <div className="answer-header">
+            <h2>💡 AI Grounded Answer</h2>
+            <button
+              type="button"
+              className="btn-copy-answer"
+              onClick={handleCopyAnswer}
+              title="Copy answer to clipboard"
+            >
+              {copiedAnswer ? '✓ Copied!' : '📋 Copy Answer'}
+            </button>
+          </div>
           <div className="answer-content">{answer}</div>
 
           {sources.length > 0 && (
