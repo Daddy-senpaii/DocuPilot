@@ -19,6 +19,13 @@ DocuPilot is a beginner-friendly, learning-first application for asking question
   * Interactive Q&A history per document.
 * **Database (PostgreSQL + pgvector):**
   * Automatically creates extensions and tables for documents, vector passage chunks, and Q&A history.
+* **Document Conversion Studio:**
+  * High-fidelity bidirectional conversion powered by headless LibreOffice:
+    * **PDF ⇄ Word:** `PDF → DOCX` and `DOCX → PDF`
+    * **PDF ⇄ Excel:** `PDF → XLSX` and `XLSX → PDF`
+    * **PDF ⇄ PowerPoint:** `PDF → PPTX` and `PPTX → PDF`
+    * **Word ⇄ Text:** `DOCX → TXT` and `TXT → PDF`
+  * Process isolation, timeout protection, and instant integration bridge with DocuPilot Q&A.
 
 ---
 
@@ -66,6 +73,14 @@ npm run dev
 ```
 *Runs on `http://localhost:3000`.*
 
+### 3. Local Conversion Prerequisites (For Document Converter Studio)
+
+To run document conversions locally, install headless LibreOffice:
+```bash
+sudo apt update && sudo apt install -y libreoffice
+```
+*(When using Docker Compose, LibreOffice is pre-installed inside the backend container).*
+
 ---
 
 ## 🧪 Automated Tests & Quality Checks
@@ -98,3 +113,4 @@ npm run build
 | **6. Background Jobs** | Asynchronous worker pool for extraction and indexing |  Complete |
 | **7. Quality Checks** | 100% passing automated test suite for backend and frontend |  Complete |
 | **8. Packaging & Deploy** | Multi-stage Dockerfiles and Docker Compose orchestration |  Complete |
+| **9. Document Converter** | Bidirectional 8-format conversion studio with Q&A integration |  Complete |
