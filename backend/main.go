@@ -15,6 +15,7 @@ import (
 
 	"docupilot/backend/ai"
 	"docupilot/backend/auth"
+	"docupilot/backend/converter"
 	"docupilot/backend/extractor"
 	"docupilot/backend/jobs"
 	"docupilot/backend/store"
@@ -124,6 +125,7 @@ func SetupRouter(
 ) *gin.Engine {
 	var jwtManager *auth.JWTManager
 	var limiter *auth.IPRateLimiter
+	var docConverter converter.DocumentConverter
 
 	for _, param := range authParams {
 		switch p := param.(type) {
@@ -131,7 +133,13 @@ func SetupRouter(
 			jwtManager = p
 		case *auth.IPRateLimiter:
 			limiter = p
+		case converter.DocumentConverter:
+			docConverter = p
 		}
+	}
+
+	if docConverter == nil {
+		docConverter = converter.NewLibreOfficeConverter("", nil)
 	}
 
 	if jwtManager == nil {
@@ -521,6 +529,65 @@ func SetupRouter(
 		})
 	})
 
+	// --- Document File Conversion Endpoints ---
+
+	// List supported conversion pairs
+	api.GET("/convert/formats", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"pairs": docConverter.SupportedPairs(),
+		})
+	})
+
+	// Convert document endpoint
+	api.POST("/convert", func(c *gin.Context) {
+		targetFormat := strings.TrimSpace(c.PostForm("target_format"))
+		sourceFormat := strings.TrimSpace(c.PostForm("source_format"))
+
+		fileHeader, err := c.FormFile("file")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Please choose a document file to convert"})
+			return
+		}
+
+		if fileHeader.Size > maxUploadSize {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "File size exceeds the 10MB limit"})
+			return
+		}
+
+		if targetFormat == "" {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "target_format is required (e.g. pdf, docx, xlsx, pptx, txt)"})
+			return
+		}
+
+		file, err := fileHeader.Open()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to read uploaded file"})
+			return
+		}
+		defer file.Close()
+
+		fileBytes, err := io.ReadAll(file)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to read file contents"})
+			return
+		}
+
+		res, err := docConverter.Convert(c.Request.Context(), converter.ConvertRequest{
+			Filename:     fileHeader.Filename,
+			SourceFormat: sourceFormat,
+			TargetFormat: targetFormat,
+			Data:         fileBytes,
+		})
+		if err != nil {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+			return
+		}
+
+		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, res.Filename))
+		c.Header("Content-Type", res.MimeType)
+		c.Data(http.StatusOK, res.MimeType, res.Data)
+	})
+
 	return r
 }
 
@@ -570,6 +637,7 @@ func main() {
 	defer processor.Close()
 
 	pdfExtractor := extractor.NewPDFExtractor()
+	docConverter := converter.NewLibreOfficeConverter("", nil)
 
 	// Initialize JWT manager and rate limiter
 	jwtSecret := os.Getenv("JWT_SECRET")
@@ -577,7 +645,7 @@ func main() {
 	rateLimiter := auth.NewIPRateLimiter(5 * time.Minute)
 	defer rateLimiter.Close()
 
-	router := SetupRouter(provider, embedder, pdfExtractor, st, processor, jwtManager, rateLimiter)
+	router := SetupRouter(provider, embedder, pdfExtractor, st, processor, jwtManager, rateLimiter, docConverter)
 
 	log.Printf("Starting DocuPilot backend server on port %s...", port)
 	if err := router.Run(":" + port); err != nil {

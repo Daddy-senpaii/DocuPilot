@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"docupilot/backend/ai"
+	"docupilot/backend/converter"
 	"docupilot/backend/extractor"
 	"docupilot/backend/jobs"
 	"docupilot/backend/store"
@@ -402,5 +404,130 @@ func TestAuthEndpointsAndUserIsolation(t *testing.T) {
 	env.router.ServeHTTP(wDelOwn, reqDelOwn)
 	if wDelOwn.Code != http.StatusOK {
 		t.Fatalf("expected 200 when deleting own document, got %d", wDelOwn.Code)
+	}
+}
+
+type mockConverter struct {
+	pairs []converter.ConversionPair
+	res   *converter.ConvertResult
+	err   error
+}
+
+func (m *mockConverter) Convert(_ context.Context, req converter.ConvertRequest) (*converter.ConvertResult, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.res != nil {
+		return m.res, nil
+	}
+	return &converter.ConvertResult{
+		Filename: "converted-" + req.Filename,
+		MimeType: converter.GetMimeType(req.TargetFormat),
+		Data:     []byte("mock-converted-data"),
+	}, nil
+}
+
+func (m *mockConverter) SupportedPairs() []converter.ConversionPair {
+	if m.pairs != nil {
+		return m.pairs
+	}
+	return converter.NewLibreOfficeConverter("", nil).SupportedPairs()
+}
+
+func (m *mockConverter) IsSupported(source, target string) bool {
+	return converter.NewLibreOfficeConverter("", nil).IsSupported(source, target)
+}
+
+func TestConvertEndpoints(t *testing.T) {
+	env, cleanup := setupTestRouter(nil)
+	defer cleanup()
+
+	// 1. GET /api/convert/formats
+	reqFormats, _ := http.NewRequest(http.MethodGet, "/api/convert/formats", nil)
+	wFormats := httptest.NewRecorder()
+	env.router.ServeHTTP(wFormats, reqFormats)
+
+	if wFormats.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/convert/formats, got %d", wFormats.Code)
+	}
+
+	var formatsResp struct {
+		Pairs []converter.ConversionPair `json:"pairs"`
+	}
+	if err := json.Unmarshal(wFormats.Body.Bytes(), &formatsResp); err != nil {
+		t.Fatalf("failed to decode formats response: %v", err)
+	}
+	if len(formatsResp.Pairs) != 8 {
+		t.Fatalf("expected 8 supported pairs, got %d", len(formatsResp.Pairs))
+	}
+
+	// 2. POST /api/convert with missing file
+	reqEmpty, _ := http.NewRequest(http.MethodPost, "/api/convert", nil)
+	wEmpty := httptest.NewRecorder()
+	env.router.ServeHTTP(wEmpty, reqEmpty)
+	if wEmpty.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty convert request, got %d", wEmpty.Code)
+	}
+
+	// 3. POST /api/convert with missing target_format
+	bodyNoTarget := new(bytes.Buffer)
+	writerNoTarget := multipart.NewWriter(bodyNoTarget)
+	partNoTarget, _ := writerNoTarget.CreateFormFile("file", "test.pdf")
+	_, _ = partNoTarget.Write([]byte("%PDF-1.4 test"))
+	_ = writerNoTarget.Close()
+
+	reqNoTarget, _ := http.NewRequest(http.MethodPost, "/api/convert", bodyNoTarget)
+	reqNoTarget.Header.Set("Content-Type", writerNoTarget.FormDataContentType())
+	wNoTarget := httptest.NewRecorder()
+	env.router.ServeHTTP(wNoTarget, reqNoTarget)
+	if wNoTarget.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing target_format, got %d", wNoTarget.Code)
+	}
+
+	// 4. POST /api/convert successful conversion with mock converter
+	mockConv := &mockConverter{
+		res: &converter.ConvertResult{
+			Filename: "sample.docx",
+			MimeType: converter.GetMimeType("docx"),
+			Data:     []byte("word-docx-bytes"),
+		},
+	}
+
+	customRouter := SetupRouter(
+		&ai.MockProvider{Answer: "test"},
+		ai.NewMockEmbedder(),
+		&mockPDFExtractor{Text: "test"},
+		store.NewMemoryStore(),
+		nil,
+		mockConv,
+	)
+
+	bodyValid := new(bytes.Buffer)
+	writerValid := multipart.NewWriter(bodyValid)
+	_ = writerValid.WriteField("target_format", "docx")
+	_ = writerValid.WriteField("source_format", "pdf")
+	partValid, _ := writerValid.CreateFormFile("file", "sample.pdf")
+	_, _ = partValid.Write([]byte("%PDF-1.5 test document"))
+	_ = writerValid.Close()
+
+	reqValid, _ := http.NewRequest(http.MethodPost, "/api/convert", bodyValid)
+	reqValid.Header.Set("Content-Type", writerValid.FormDataContentType())
+	wValid := httptest.NewRecorder()
+	customRouter.ServeHTTP(wValid, reqValid)
+
+	if wValid.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/convert, got %d: %s", wValid.Code, wValid.Body.String())
+	}
+
+	if wValid.Header().Get("Content-Type") != converter.GetMimeType("docx") {
+		t.Fatalf("unexpected Content-Type: %s", wValid.Header().Get("Content-Type"))
+	}
+
+	if !strings.Contains(wValid.Header().Get("Content-Disposition"), "sample.docx") {
+		t.Fatalf("unexpected Content-Disposition header: %s", wValid.Header().Get("Content-Disposition"))
+	}
+
+	if wValid.Body.String() != "word-docx-bytes" {
+		t.Fatalf("unexpected converted file body: %s", wValid.Body.String())
 	}
 }

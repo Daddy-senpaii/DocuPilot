@@ -19,7 +19,7 @@ FROM alpine:3.20
 
 WORKDIR /app
 
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates tzdata libreoffice
 
 COPY --from=builder /docupilot-backend /app/docupilot-backend
 
