@@ -61,6 +61,7 @@ export default function App() {
   const [copiedAnswer, setCopiedAnswer] = useState(false);
 
   const [loading, setLoading] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -457,8 +458,9 @@ export default function App() {
     }
 
     setLoading(true);
+    setIsStreaming(true);
     setError(null);
-    setAnswer(null);
+    setAnswer('');
     setSources([]);
 
     try {
@@ -472,7 +474,7 @@ export default function App() {
         payload.text = text.trim();
       }
 
-      const response = await fetch(`${API_BASE_URL}/api/ask`, {
+      const response = await fetch(`${API_BASE_URL}/api/ask/stream`, {
         method: 'POST',
         headers: getAuthHeaders({
           'Content-Type': 'application/json',
@@ -480,19 +482,65 @@ export default function App() {
         body: JSON.stringify(payload),
       });
 
-      const data = await response.json();
-
       if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
         throw new Error(data.error || `Server responded with status ${response.status}`);
       }
 
-      setAnswer(data.answer);
-      if (data.sources) {
-        setSources(data.sources);
+      if (!response.body) {
+        throw new Error('Streaming response is unavailable on this device/browser.');
       }
 
-      if (activeDoc) {
-        fetchDocumentDetails(activeDoc.id);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+
+        for (const block of blocks) {
+          if (!block.trim()) continue;
+          let eventType = 'message';
+          let eventData = '';
+
+          const lines = block.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith('data: ')) {
+              eventData = line.slice(6);
+            }
+          }
+
+          if (!eventData) continue;
+
+          try {
+            const parsed = JSON.parse(eventData);
+            if (eventType === 'sources' && Array.isArray(parsed.sources)) {
+              setSources(parsed.sources);
+            } else if (eventType === 'chunk' && typeof parsed.chunk === 'string') {
+              setAnswer((prev) => (prev || '') + parsed.chunk);
+            } else if (eventType === 'done') {
+              if (parsed.answer) {
+                setAnswer(parsed.answer);
+              }
+              if (activeDoc) {
+                fetchDocumentDetails(activeDoc.id);
+              }
+            } else if (eventType === 'error') {
+              throw new Error(parsed.error || 'Error streaming answer');
+            }
+          } catch (err: unknown) {
+            if (eventType === 'error') {
+              throw err;
+            }
+          }
+        }
       }
     } catch (err: unknown) {
       if (err instanceof Error) {
@@ -502,6 +550,7 @@ export default function App() {
       }
     } finally {
       setLoading(false);
+      setIsStreaming(false);
     }
   };
 
@@ -1285,23 +1334,31 @@ export default function App() {
         )}
       </div>
 
-      {answer && (
+      {(answer || isStreaming) && (
         <section className="answer-card" aria-live="polite">
           <div className="answer-header">
-            <h2>💡 AI Grounded Answer</h2>
-            <button
-              type="button"
-              className="btn-copy-answer"
-              onClick={handleCopyAnswer}
-              title="Copy answer to clipboard"
-            >
-              {copiedAnswer ? '✓ Copied!' : '📋 Copy Answer'}
-            </button>
+            <h2>
+              💡 AI Grounded Answer{' '}
+              {isStreaming && <span className="streaming-badge">Streaming live...</span>}
+            </h2>
+            {answer && !isStreaming && (
+              <button
+                type="button"
+                className="btn-copy-answer"
+                onClick={handleCopyAnswer}
+                title="Copy answer to clipboard"
+              >
+                {copiedAnswer ? '✓ Copied!' : '📋 Copy Answer'}
+              </button>
+            )}
           </div>
-          <div className="answer-content">{answer}</div>
+          <div className="answer-content">
+            {answer || (isStreaming ? 'Searching passages and thinking...' : '')}
+            {isStreaming && <span className="streaming-cursor">▊</span>}
+          </div>
 
           {sources.length > 0 && (
-            <details className="sources-section">
+            <details className="sources-section" open={isStreaming}>
               <summary>Retrieved Sources ({sources.length} passages)</summary>
               <div className="sources-list">
                 {sources.map((s, idx) => (
