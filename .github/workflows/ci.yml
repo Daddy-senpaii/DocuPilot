@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-      - 'feat/**'
-      - 'fix/**'
   pull_request:
     branches:
       - main
@@ -81,24 +79,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: actions/setup-buildx-action@v3
-
       - name: Validate Docker Compose Configuration
         run: docker compose config
 
       - name: Build Backend Docker Image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./backend
-          file: ./backend/Dockerfile
-          push: false
-          tags: docupilot-backend:test
+        run: docker build -t docupilot-backend:test ./backend
 
       - name: Build Frontend Docker Image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend
-          file: ./frontend/Dockerfile
-          push: false
-          tags: docupilot-frontend:test
+        run: docker build -t docupilot-frontend:test ./frontend
