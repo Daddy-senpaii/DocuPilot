@@ -768,6 +768,48 @@ textarea:focus, input[type="text"]:focus, input[type="email"]:focus, input[type=
   font-size: 1rem;
 }
 
+.streaming-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #4f46e5;
+  background-color: #e0e7ff;
+  border-radius: 9999px;
+  padding: 0.2rem 0.6rem;
+  margin-left: 0.5rem;
+  letter-spacing: 0.02em;
+  display: inline-block;
+  vertical-align: middle;
+  animation: pulse 1.5s infinite ease-in-out;
+}
+
+.streaming-cursor {
+  display: inline-block;
+  margin-left: 3px;
+  color: #4f46e5;
+  font-weight: 900;
+  animation: blink 0.9s infinite;
+}
+
+@keyframes blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(0.97);
+  }
+}
+
 .sources-section {
   margin-top: 1rem;
   border-top: 1px dashed #cbd5e1;

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -363,6 +364,50 @@ func SetupRouter(
 		c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 	})
 
+	// Helper function to resolve document/text context and perform semantic snippet retrieval
+	resolveQAContext := func(
+		c *gin.Context,
+		req AskRequest,
+		reqEmbedder ai.Embedder,
+	) (contextForAI string, sourceSnippets []string, errResp *ErrorResponse, statusCode int) {
+		if req.DocumentID != nil {
+			doc, err := st.GetDocument(c.Request.Context(), *req.DocumentID)
+			if err != nil {
+				return "", nil, &ErrorResponse{Error: "Specified document not found"}, http.StatusNotFound
+			}
+
+			if userID, ok := auth.GetAuthUserID(c); ok && doc.UserID != nil && *doc.UserID != userID {
+				return "", nil, &ErrorResponse{Error: "Access denied to this document"}, http.StatusForbidden
+			}
+
+			queryEmb, err := reqEmbedder.Embed(c.Request.Context(), strings.TrimSpace(req.Question))
+			if err == nil && len(queryEmb) > 0 {
+				scoredChunks, _ := st.SearchSimilarChunks(c.Request.Context(), *req.DocumentID, queryEmb, 3)
+				if len(scoredChunks) > 0 {
+					var passageBuilder strings.Builder
+					for i, sc := range scoredChunks {
+						snippet := fmt.Sprintf("[Passage %d | similarity: %.2f]:\n%s", i+1, sc.Similarity, sc.Content)
+						sourceSnippets = append(sourceSnippets, snippet)
+						passageBuilder.WriteString(snippet + "\n\n")
+					}
+					contextForAI = passageBuilder.String()
+				}
+			}
+
+			if strings.TrimSpace(contextForAI) == "" {
+				contextForAI = doc.Content
+			}
+		} else {
+			trimmedText := strings.TrimSpace(req.Text)
+			if trimmedText == "" {
+				return "", nil, &ErrorResponse{Error: "Either document_id or text must be provided"}, http.StatusBadRequest
+			}
+			contextForAI = trimmedText
+		}
+
+		return contextForAI, sourceSnippets, nil, http.StatusOK
+	}
+
 	// Question answering endpoint (Semantic Search + AI)
 	api.POST("/ask", func(c *gin.Context) {
 		var req AskRequest
@@ -387,50 +432,10 @@ func SetupRouter(
 			reqEmbedder = ai.NewGeminiEmbedder(customKey, "")
 		}
 
-		var contextForAI string
-		var sourceSnippets []string
-
-		if req.DocumentID != nil {
-			// Document mode: retrieve relevant semantic passages
-			doc, err := st.GetDocument(c.Request.Context(), *req.DocumentID)
-			if err != nil {
-				c.JSON(http.StatusNotFound, ErrorResponse{Error: "Specified document not found"})
-				return
-			}
-
-			// Security: verify user authorization for this document
-			if userID, ok := auth.GetAuthUserID(c); ok && doc.UserID != nil && *doc.UserID != userID {
-				c.JSON(http.StatusForbidden, ErrorResponse{Error: "Access denied to this document"})
-				return
-			}
-
-			// Perform semantic retrieval if embedder and chunks are available
-			queryEmb, err := reqEmbedder.Embed(c.Request.Context(), trimmedQuestion)
-			if err == nil && len(queryEmb) > 0 {
-				scoredChunks, _ := st.SearchSimilarChunks(c.Request.Context(), *req.DocumentID, queryEmb, 3)
-				if len(scoredChunks) > 0 {
-					var passageBuilder strings.Builder
-					for i, sc := range scoredChunks {
-						snippet := fmt.Sprintf("[Passage %d | similarity: %.2f]:\n%s", i+1, sc.Similarity, sc.Content)
-						sourceSnippets = append(sourceSnippets, snippet)
-						passageBuilder.WriteString(snippet + "\n\n")
-					}
-					contextForAI = passageBuilder.String()
-				}
-			}
-
-			// Fallback to full document text if chunk search returned empty
-			if strings.TrimSpace(contextForAI) == "" {
-				contextForAI = doc.Content
-			}
-		} else {
-			// Direct pasted text mode
-			trimmedText := strings.TrimSpace(req.Text)
-			if trimmedText == "" {
-				c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Either document_id or text must be provided"})
-				return
-			}
-			contextForAI = trimmedText
+		contextForAI, sourceSnippets, errResp, status := resolveQAContext(c, req, reqEmbedder)
+		if errResp != nil {
+			c.JSON(status, errResp)
+			return
 		}
 
 		answer, err := reqAIProvider.GenerateAnswer(c.Request.Context(), contextForAI, trimmedQuestion)
@@ -454,6 +459,92 @@ func SetupRouter(
 			Answer:  answer,
 			Sources: sourceSnippets,
 		})
+	})
+
+	// Question answering streaming endpoint (Server-Sent Events)
+	api.POST("/ask/stream", func(c *gin.Context) {
+		var req AskRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid JSON request payload"})
+			return
+		}
+
+		trimmedQuestion := strings.TrimSpace(req.Question)
+		if trimmedQuestion == "" {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Question cannot be empty"})
+			return
+		}
+
+		reqAIProvider := provider
+		reqEmbedder := embedder
+		customKey := strings.TrimSpace(c.GetHeader("X-Gemini-Api-Key"))
+		if customKey != "" {
+			model := os.Getenv("GEMINI_MODEL")
+			reqAIProvider = ai.NewGeminiProvider(customKey, model)
+			reqEmbedder = ai.NewGeminiEmbedder(customKey, "")
+		}
+
+		contextForAI, sourceSnippets, errResp, status := resolveQAContext(c, req, reqEmbedder)
+		if errResp != nil {
+			c.JSON(status, errResp)
+			return
+		}
+
+		// Configure Server-Sent Events headers
+		c.Writer.Header().Set("Content-Type", "text/event-stream")
+		c.Writer.Header().Set("Cache-Control", "no-cache")
+		c.Writer.Header().Set("Connection", "keep-alive")
+		c.Writer.Header().Set("Transfer-Encoding", "chunked")
+		c.Writer.WriteHeader(http.StatusOK)
+
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Streaming unsupported by response writer"})
+			return
+		}
+		flusher.Flush()
+
+		// Stream retrieved source citations first
+		sourcesBytes, _ := json.Marshal(gin.H{"sources": sourceSnippets})
+		fmt.Fprintf(c.Writer, "event: sources\ndata: %s\n\n", string(sourcesBytes))
+		flusher.Flush()
+
+		// Stream answer chunks token by token
+		var fullAnswer strings.Builder
+		streamErr := reqAIProvider.GenerateAnswerStream(c.Request.Context(), contextForAI, trimmedQuestion, func(chunk string) error {
+			fullAnswer.WriteString(chunk)
+			chunkData, _ := json.Marshal(gin.H{"chunk": chunk})
+			_, writeErr := fmt.Fprintf(c.Writer, "event: chunk\ndata: %s\n\n", string(chunkData))
+			flusher.Flush()
+			return writeErr
+		})
+
+		if streamErr != nil {
+			errData, _ := json.Marshal(gin.H{"error": streamErr.Error()})
+			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", string(errData))
+			flusher.Flush()
+			return
+		}
+
+		finalAnswer := strings.TrimSpace(fullAnswer.String())
+
+		// Persist QA into history
+		qa := &store.QAHistory{
+			DocumentID: req.DocumentID,
+			Question:   trimmedQuestion,
+			Answer:     finalAnswer,
+		}
+		if userID, ok := auth.GetAuthUserID(c); ok {
+			qa.UserID = &userID
+		}
+		_ = st.SaveQA(c.Request.Context(), qa)
+
+		doneData, _ := json.Marshal(gin.H{
+			"answer": finalAnswer,
+			"qa_id":  qa.ID,
+		})
+		fmt.Fprintf(c.Writer, "event: done\ndata: %s\n\n", string(doneData))
+		flusher.Flush()
 	})
 
 	// PDF document upload and text extraction endpoint

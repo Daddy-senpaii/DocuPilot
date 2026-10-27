@@ -179,6 +179,136 @@ func TestAskWithDocumentAndSemanticSearch(t *testing.T) {
 	}
 }
 
+func TestAskStreamSuccess(t *testing.T) {
+	mockAI := &ai.MockProvider{
+		Answer: "DocuPilot streams answers chunk by chunk.",
+	}
+	env, cleanup := setupTestRouter(mockAI)
+	defer cleanup()
+
+	payload := AskRequest{
+		Text:     "DocuPilot is designed with Go and React.",
+		Question: "How does DocuPilot stream answers?",
+	}
+	body, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest(http.MethodPost, "/api/ask/stream", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d. Body: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/event-stream") {
+		t.Fatalf("expected Content-Type text/event-stream, got %q", contentType)
+	}
+
+	bodyStr := w.Body.String()
+	if !strings.Contains(bodyStr, "event: sources") {
+		t.Fatalf("expected event: sources in stream, got %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "event: chunk") {
+		t.Fatalf("expected event: chunk in stream, got %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "event: done") {
+		t.Fatalf("expected event: done in stream, got %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "DocuPilot streams answers chunk by chunk.") {
+		t.Fatalf("expected answer text in done event, got %s", bodyStr)
+	}
+}
+
+func TestAskStreamWithDocumentAndSemanticSearch(t *testing.T) {
+	mockAI := &ai.MockProvider{
+		Answer: "DocuPilot stream with document citations.",
+	}
+	env, cleanup := setupTestRouter(mockAI)
+	defer cleanup()
+
+	ctx := context.Background()
+	doc := &store.Document{
+		Filename:  "streaming_guide.pdf",
+		Content:   "Server-Sent Events allow continuous streaming of response tokens directly to the browser.",
+		CharCount: 90,
+	}
+	_ = env.store.SaveDocument(ctx, doc)
+	_ = env.processor.ProcessSync(ctx, doc.ID)
+
+	payload := AskRequest{
+		DocumentID: &doc.ID,
+		Question:   "What do Server-Sent Events allow?",
+	}
+	body, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest(http.MethodPost, "/api/ask/stream", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	bodyStr := w.Body.String()
+	if !strings.Contains(bodyStr, "Passage 1") {
+		t.Fatalf("expected Passage citation in stream sources, got %s", bodyStr)
+	}
+}
+
+func TestAskStreamMissingQuestion(t *testing.T) {
+	env, cleanup := setupTestRouter(nil)
+	defer cleanup()
+
+	payload := AskRequest{
+		Text:     "Some valid text",
+		Question: "   ",
+	}
+	body, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest(http.MethodPost, "/api/ask/stream", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for empty question, got %d", w.Code)
+	}
+}
+
+func TestAskStreamAIError(t *testing.T) {
+	mockAI := &ai.MockProvider{
+		Err: errors.New("upstream streaming error occurred"),
+	}
+	env, cleanup := setupTestRouter(mockAI)
+	defer cleanup()
+
+	payload := AskRequest{
+		Text:     "Some valid text",
+		Question: "A question?",
+	}
+	body, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest(http.MethodPost, "/api/ask/stream", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200 (SSE connection established), got %d", w.Code)
+	}
+
+	bodyStr := w.Body.String()
+	if !strings.Contains(bodyStr, "event: error") {
+		t.Fatalf("expected event: error, got %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "upstream streaming error occurred") {
+		t.Fatalf("expected error message in stream, got %s", bodyStr)
+	}
+}
+
 func createMultipartRequest(fieldName, filename string, content []byte) (*http.Request, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
