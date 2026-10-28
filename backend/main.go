@@ -155,6 +155,16 @@ func SetupRouter(
 	r.Use(corsMiddleware())
 	r.MaxMultipartMemory = maxUploadSize
 
+	// Root welcome endpoint
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"service": "DocuPilot Backend API",
+			"status":  "running",
+			"health":  "/health",
+			"version": "1.0.0",
+		})
+	})
+
 	// Health check endpoint
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})

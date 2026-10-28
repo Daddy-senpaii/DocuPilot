@@ -64,6 +64,28 @@ type ginTestEnv struct {
 	processor *jobs.DocumentProcessor
 }
 
+func TestRootEndpoint(t *testing.T) {
+	env, cleanup := setupTestRouter(nil)
+	defer cleanup()
+
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var res map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if res["status"] != "running" {
+		t.Fatalf("expected status 'running', got %q", res["status"])
+	}
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	env, cleanup := setupTestRouter(nil)
 	defer cleanup()
