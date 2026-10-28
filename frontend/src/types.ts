@@ -2,7 +2,9 @@ const rawBaseUrl = import.meta.env.VITE_API_BASE_URL;
 export const API_BASE_URL = rawBaseUrl
   ? (rawBaseUrl.startsWith('http://') || rawBaseUrl.startsWith('https://')
       ? rawBaseUrl
-      : `https://${rawBaseUrl}`)
+      : (rawBaseUrl.includes('.')
+          ? `https://${rawBaseUrl}`
+          : `https://${rawBaseUrl}.onrender.com`))
   : (import.meta.env.DEV ? 'http://localhost:8080' : '');
 
 export interface User {
