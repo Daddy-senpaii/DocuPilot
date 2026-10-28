@@ -29,6 +29,24 @@ func TestGoogleVerifyDemoToken(t *testing.T) {
 	}
 }
 
+func TestGoogleVerifyDirectGmailAddress(t *testing.T) {
+	verifier := NewDefaultOAuthVerifier()
+	profile, err := verifier.VerifyGoogleToken(context.Background(), "my.name@gmail.com", "")
+	if err != nil {
+		t.Fatalf("expected direct Gmail address to succeed, got error: %v", err)
+	}
+
+	if profile.Email != "my.name@gmail.com" {
+		t.Errorf("expected email my.name@gmail.com, got %s", profile.Email)
+	}
+	if profile.Provider != "google" {
+		t.Errorf("expected provider google, got %s", profile.Provider)
+	}
+	if profile.Name != "My Name" {
+		t.Errorf("expected display name 'My Name', got %q", profile.Name)
+	}
+}
+
 func TestGitHubVerifyEmptyToken(t *testing.T) {
 	verifier := NewDefaultOAuthVerifier()
 	_, err := verifier.VerifyGitHubToken(context.Background(), "")

@@ -1603,3 +1603,282 @@ textarea:focus, input[type="text"]:focus, input[type="email"]:focus, input[type=
   transform: translateY(-1px);
 }
 
+/* ==========================================================================
+   Google Sign-In Authentic Account Chooser Dialog
+   ========================================================================== */
+
+.google-dialog-backdrop {
+  z-index: 1200 !important;
+}
+
+.google-auth-card {
+  background: #ffffff;
+  color: #202124;
+  border-radius: 1.5rem;
+  max-width: 440px;
+  width: 92%;
+  padding: 2.25rem 2rem;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  animation: modalEnter 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.google-card-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.google-brand-logo {
+  margin-bottom: 0.75rem;
+}
+
+.google-card-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #202124;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+
+.google-card-subtitle {
+  font-size: 0.88rem;
+  color: #5f6368;
+  margin-top: 0.35rem;
+  line-height: 1.45;
+}
+
+.google-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  margin-bottom: 1.15rem;
+}
+
+.google-accounts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.google-list-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #5f6368;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.25rem;
+}
+
+.google-account-item {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.75rem 0.95rem;
+  border: 1px solid #dadce0;
+  border-radius: 10px;
+  background: #ffffff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.google-account-item:hover {
+  background: #f8fafc;
+  border-color: #1a73e8;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(26, 115, 232, 0.1);
+}
+
+.google-avatar-circle {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #1a73e8;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.google-account-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.google-account-name {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #202124;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.google-account-email {
+  font-size: 0.78rem;
+  color: #5f6368;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.google-account-remove {
+  border: none;
+  background: transparent;
+  color: #9aa0a6;
+  font-size: 0.9rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.google-account-remove:hover {
+  color: #ea4335;
+  background: rgba(234, 67, 53, 0.08);
+}
+
+.google-use-another-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.75rem 0.95rem;
+  border: 1px dashed #dadce0;
+  border-radius: 10px;
+  background: transparent;
+  color: #1a73e8;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-top: 0.25rem;
+}
+
+.google-use-another-btn:hover {
+  background: rgba(26, 115, 232, 0.04);
+  border-color: #1a73e8;
+}
+
+.google-email-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.google-input-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.google-input-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #202124;
+}
+
+.google-native-input {
+  width: 100%;
+  height: 48px;
+  padding: 0 1rem;
+  border: 1.5px solid #1a73e8;
+  border-radius: 8px;
+  font-size: 15px;
+  color: #202124;
+  background: #ffffff;
+  outline: none;
+  box-shadow: 0 1px 3px rgba(26, 115, 232, 0.15);
+}
+
+.google-native-input:focus {
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.2);
+}
+
+.google-back-to-list-btn {
+  border: none;
+  background: transparent;
+  color: #1a73e8;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+}
+
+.google-back-to-list-btn:hover {
+  text-decoration: underline;
+}
+
+.google-action-buttons {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.google-btn-cancel {
+  border: none;
+  background: transparent;
+  color: #1a73e8;
+  font-size: 0.88rem;
+  font-weight: 600;
+  padding: 0.6rem 1.25rem;
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.google-btn-cancel:hover:not(:disabled) {
+  background: rgba(26, 115, 232, 0.08);
+}
+
+.google-btn-next {
+  background: #1a73e8;
+  color: #ffffff;
+  border: none;
+  font-size: 0.88rem;
+  font-weight: 600;
+  padding: 0.6rem 1.6rem;
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.google-btn-next:hover:not(:disabled) {
+  background: #1557b0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.google-btn-next:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.google-card-footer {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #dadce0;
+  font-size: 0.74rem;
+  color: #5f6368;
+  line-height: 1.45;
+  text-align: center;
+}
+

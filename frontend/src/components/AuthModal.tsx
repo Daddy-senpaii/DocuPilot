@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, API_BASE_URL } from '../types';
+import { GoogleAuthDialog } from './GoogleAuthDialog';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -27,6 +28,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [providers, setProviders] = useState<ProvidersResponse | null>(null);
   const [oauthLoading, setOauthLoading] = useState<'google' | 'github' | null>(null);
+  const [showGoogleDialog, setShowGoogleDialog] = useState(false);
+  const [googleDialogError, setGoogleDialogError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -83,27 +86,56 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  const handleGoogleSignIn = async () => {
+  const handleGoogleSignIn = () => {
     setError(null);
-    const googleClientId = providers?.google?.client_id;
+    setGoogleDialogError(null);
 
-    if (googleClientId) {
-      if (typeof window !== 'undefined' && window.google?.accounts?.id) {
-        window.google.accounts.id.initialize({
-          client_id: googleClientId,
-          callback: async (resp: { credential: string }) => {
-            if (resp.credential) {
-              await handleOAuthSubmit('google', resp.credential);
-            }
-          },
-        });
-        window.google.accounts.id.prompt();
-        return;
-      }
+    const googleClientId = providers?.google?.client_id;
+    if (googleClientId && typeof window !== 'undefined' && window.google?.accounts?.id) {
+      window.google.accounts.id.initialize({
+        client_id: googleClientId,
+        callback: async (resp: { credential: string }) => {
+          if (resp.credential) {
+            await handleOAuthSubmit('google', resp.credential);
+          }
+        },
+      });
+      window.google.accounts.id.prompt();
+      return;
     }
 
-    // Demo fallback / fast testing
-    await handleOAuthSubmit('google', 'demo-google-token');
+    // Open authentic Google account chooser & Gmail address prompt
+    setShowGoogleDialog(true);
+  };
+
+  const handleGoogleAccountSelected = async (email: string) => {
+    setOauthLoading('google');
+    setGoogleDialogError(null);
+    try {
+      const endpoint = `${API_BASE_URL}/api/auth/oauth/google`;
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: email }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Google authentication failed');
+      }
+
+      setShowGoogleDialog(false);
+      onAuthSuccess(data.token, data.user, `Signed in successfully with Google (${email})!`);
+      onClose();
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setGoogleDialogError(err.message);
+      } else {
+        setGoogleDialogError('An unexpected error occurred during Google sign in.');
+      }
+    } finally {
+      setOauthLoading(null);
+    }
   };
 
   const handleGitHubSignIn = async () => {
@@ -477,6 +509,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
         </div>
       </div>
+
+      <GoogleAuthDialog
+        isOpen={showGoogleDialog}
+        onClose={() => setShowGoogleDialog(false)}
+        onSelectAccount={handleGoogleAccountSelected}
+        loading={oauthLoading === 'google'}
+        error={googleDialogError}
+      />
     </div>
   );
 };

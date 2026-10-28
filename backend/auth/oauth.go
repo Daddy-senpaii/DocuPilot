@@ -85,6 +85,23 @@ func (v *DefaultOAuthVerifier) VerifyGoogleToken(ctx context.Context, idToken st
 		}, nil
 	}
 
+	// Direct Gmail / Google Account ID authentication (e.g. user@gmail.com or google-account:user@gmail.com)
+	cleanCandidate := strings.TrimPrefix(trimmed, "google-account:")
+	if strings.Contains(cleanCandidate, "@") && !strings.HasPrefix(cleanCandidate, "ey") {
+		normalizedEmail, err := NormalizeAndValidateEmail(cleanCandidate)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Gmail address: %w", err)
+		}
+		username := strings.Split(normalizedEmail, "@")[0]
+		displayName := strings.Title(strings.ReplaceAll(username, ".", " "))
+		return &OAuthProfile{
+			Email:    normalizedEmail,
+			Name:     displayName,
+			Provider: "google",
+			Sub:      "google_user_" + normalizedEmail,
+		}, nil
+	}
+
 	reqURL := fmt.Sprintf("https://oauth2.googleapis.com/tokeninfo?id_token=%s", trimmed)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
