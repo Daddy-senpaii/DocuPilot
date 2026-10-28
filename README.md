@@ -51,6 +51,12 @@ The fastest way to launch the complete system (Postgres + pgvector, Backend, Fro
 
 ---
 
+## ☁️ Cloud Deployment (Render Blueprint)
+
+DocuPilot can be deployed to the cloud in one click using Render. See [`DEPLOYMENT.md`](DEPLOYMENT.md) for step-by-step instructions with `render.yaml`.
+
+---
+
 ## 💻 Running Locally (Without Docker)
 
 ### 1. Run the Backend
