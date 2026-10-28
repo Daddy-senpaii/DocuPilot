@@ -31,8 +31,6 @@ services:
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: ./dist
-    plan: free
-    region: oregon
     envVars:
       - key: VITE_API_BASE_URL
         fromService:
