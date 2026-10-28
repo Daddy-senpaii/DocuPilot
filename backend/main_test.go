@@ -813,3 +813,148 @@ func TestGitHubOAuthFlow(t *testing.T) {
 		t.Fatalf("expected 400 for missing token, got %d", w2.Code)
 	}
 }
+
+func TestGoogleOAuthLoginEndpoint(t *testing.T) {
+	st := store.NewMemoryStore()
+	jwtManager := auth.NewJWTManager("test-secret-key-32-chars-long!", time.Hour)
+
+	// Case 1: Unconfigured (Simulator mode)
+	unconfiguredOAuth := auth.NewGoogleOAuthManager("", "", "")
+	router1 := SetupRouter(
+		&ai.MockProvider{Answer: "mock"},
+		ai.NewMockEmbedder(),
+		&mockPDFExtractor{Text: "test"},
+		st,
+		nil,
+		jwtManager,
+		unconfiguredOAuth,
+	)
+
+	req1, _ := http.NewRequest(http.MethodGet, "/api/auth/google/login", nil)
+	w1 := httptest.NewRecorder()
+	router1.ServeHTTP(w1, req1)
+
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200 simulator page when unconfigured, got %d", w1.Code)
+	}
+	if !strings.Contains(w1.Body.String(), "Sign in with Google") {
+		t.Errorf("expected Google login simulator HTML")
+	}
+
+	cookie1 := w1.Header().Get("Set-Cookie")
+	if !strings.Contains(cookie1, "docupilot_oauth_state=") {
+		t.Errorf("expected docupilot_oauth_state cookie to be set, got: %s", cookie1)
+	}
+
+	// Case 2: Configured (Redirect to Google)
+	configuredOAuth := auth.NewGoogleOAuthManager("google-client-id-123", "google-secret-456", "http://localhost:8080/api/auth/google/callback")
+	router2 := SetupRouter(
+		&ai.MockProvider{Answer: "mock"},
+		ai.NewMockEmbedder(),
+		&mockPDFExtractor{Text: "test"},
+		st,
+		nil,
+		jwtManager,
+		configuredOAuth,
+	)
+
+	req2, _ := http.NewRequest(http.MethodGet, "/api/auth/google/login", nil)
+	w2 := httptest.NewRecorder()
+	router2.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect when configured, got %d", w2.Code)
+	}
+	loc := w2.Header().Get("Location")
+	if !strings.HasPrefix(loc, "https://accounts.google.com/o/oauth2/v2/auth?") {
+		t.Fatalf("unexpected redirect location: %s", loc)
+	}
+	if !strings.Contains(loc, "client_id=google-client-id-123") {
+		t.Errorf("redirect missing client_id parameter: %s", loc)
+	}
+}
+
+func TestGoogleOAuthCallbackFlow(t *testing.T) {
+	st := store.NewMemoryStore()
+	jwtManager := auth.NewJWTManager("test-secret-key-32-chars-long!", time.Hour)
+	googleOAuth := auth.NewGoogleOAuthManager("", "", "")
+
+	router := SetupRouter(
+		&ai.MockProvider{Answer: "mock"},
+		ai.NewMockEmbedder(),
+		&mockPDFExtractor{Text: "test"},
+		st,
+		nil,
+		jwtManager,
+		googleOAuth,
+	)
+
+	// Step 1: Initiate login to get valid state cookie
+	loginReq, _ := http.NewRequest(http.MethodGet, "/api/auth/google/login", nil)
+	loginW := httptest.NewRecorder()
+	router.ServeHTTP(loginW, loginReq)
+
+	setCookieHeader := loginW.Header().Get("Set-Cookie")
+	var stateValue string
+	for _, part := range strings.Split(setCookieHeader, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "docupilot_oauth_state=") {
+			stateValue = strings.TrimPrefix(part, "docupilot_oauth_state=")
+			break
+		}
+	}
+	if stateValue == "" {
+		t.Fatalf("failed to extract state cookie value")
+	}
+
+	// Step 2: Test callback with CSRF mismatch
+	csrfReq, _ := http.NewRequest(http.MethodGet, "/api/auth/google/callback?code=demo-user@gmail.com&state=invalid-state", nil)
+	csrfReq.AddCookie(&http.Cookie{Name: "docupilot_oauth_state", Value: stateValue})
+	csrfW := httptest.NewRecorder()
+	router.ServeHTTP(csrfW, csrfReq)
+
+	if csrfW.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for CSRF mismatch, got %d", csrfW.Code)
+	}
+	if !strings.Contains(csrfW.Body.String(), "CSRF protection failed") {
+		t.Errorf("expected CSRF error message, got: %s", csrfW.Body.String())
+	}
+
+	// Step 3: Test callback with Google error (e.g. user cancelled)
+	errReq, _ := http.NewRequest(http.MethodGet, "/api/auth/google/callback?error=access_denied", nil)
+	errW := httptest.NewRecorder()
+	router.ServeHTTP(errW, errReq)
+
+	if errW.Code != http.StatusOK {
+		t.Fatalf("expected 200 error popup, got %d", errW.Code)
+	}
+	if !strings.Contains(errW.Body.String(), "GOOGLE_AUTH_ERROR") {
+		t.Errorf("expected GOOGLE_AUTH_ERROR postMessage")
+	}
+
+	// Step 4: Test successful demo callback flow
+	successReq, _ := http.NewRequest(http.MethodGet, "/api/auth/google/callback?code=demo-pilot.tester@gmail.com&state="+stateValue, nil)
+	successReq.AddCookie(&http.Cookie{Name: "docupilot_oauth_state", Value: stateValue})
+	successW := httptest.NewRecorder()
+	router.ServeHTTP(successW, successReq)
+
+	if successW.Code != http.StatusOK {
+		t.Fatalf("expected 200 from successful callback, got %d: %s", successW.Code, successW.Body.String())
+	}
+	bodyStr := successW.Body.String()
+	if !strings.Contains(bodyStr, "GOOGLE_AUTH_SUCCESS") {
+		t.Errorf("expected GOOGLE_AUTH_SUCCESS postMessage in HTML response")
+	}
+	if !strings.Contains(bodyStr, "pilot.tester@gmail.com") {
+		t.Errorf("expected user email in callback response")
+	}
+
+	// Step 5: Verify user was saved into store
+	user, err := st.GetUserByEmail(context.Background(), "pilot.tester@gmail.com")
+	if err != nil {
+		t.Fatalf("expected user to be created in store: %v", err)
+	}
+	if user.GoogleID == "" || user.Name != "Pilot Tester" {
+		t.Errorf("expected Google user details to be populated, got: %+v", user)
+	}
+}

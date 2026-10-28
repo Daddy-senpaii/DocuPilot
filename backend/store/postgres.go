@@ -43,8 +43,14 @@ func (p *PostgresStore) migrate() error {
 			id BIGSERIAL PRIMARY KEY,
 			email VARCHAR(255) UNIQUE NOT NULL,
 			password_hash VARCHAR(255) NOT NULL,
+			google_id VARCHAR(255),
+			name VARCHAR(255),
+			avatar_url TEXT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255);`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(255);`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;`,
 		`CREATE TABLE IF NOT EXISTS documents (
 			id BIGSERIAL PRIMARY KEY,
 			user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
@@ -276,11 +282,11 @@ func (p *PostgresStore) ListQAByDocument(ctx context.Context, docID *int64) ([]Q
 }
 
 func (p *PostgresStore) CreateUser(ctx context.Context, user *User) error {
-	query := `INSERT INTO users (email, password_hash, created_at) VALUES ($1, $2, $3) RETURNING id;`
+	query := `INSERT INTO users (email, password_hash, google_id, name, avatar_url, created_at) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id;`
 	if user.CreatedAt.IsZero() {
 		user.CreatedAt = time.Now()
 	}
-	err := p.db.QueryRowContext(ctx, query, user.Email, user.PasswordHash, user.CreatedAt).Scan(&user.ID)
+	err := p.db.QueryRowContext(ctx, query, user.Email, user.PasswordHash, user.GoogleID, user.Name, user.AvatarURL, user.CreatedAt).Scan(&user.ID)
 	if err != nil {
 		if strings.Contains(err.Error(), "unique constraint") || strings.Contains(err.Error(), "duplicate key") {
 			return ErrUserAlreadyExists
@@ -291,9 +297,9 @@ func (p *PostgresStore) CreateUser(ctx context.Context, user *User) error {
 }
 
 func (p *PostgresStore) GetUserByEmail(ctx context.Context, email string) (*User, error) {
-	query := `SELECT id, email, password_hash, created_at FROM users WHERE email = $1;`
+	query := `SELECT id, email, password_hash, COALESCE(google_id, ''), COALESCE(name, ''), COALESCE(avatar_url, ''), created_at FROM users WHERE email = $1;`
 	user := &User{}
-	err := p.db.QueryRowContext(ctx, query, email).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.CreatedAt)
+	err := p.db.QueryRowContext(ctx, query, email).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.GoogleID, &user.Name, &user.AvatarURL, &user.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -304,9 +310,9 @@ func (p *PostgresStore) GetUserByEmail(ctx context.Context, email string) (*User
 }
 
 func (p *PostgresStore) GetUserByID(ctx context.Context, id int64) (*User, error) {
-	query := `SELECT id, email, password_hash, created_at FROM users WHERE id = $1;`
+	query := `SELECT id, email, password_hash, COALESCE(google_id, ''), COALESCE(name, ''), COALESCE(avatar_url, ''), created_at FROM users WHERE id = $1;`
 	user := &User{}
-	err := p.db.QueryRowContext(ctx, query, id).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.CreatedAt)
+	err := p.db.QueryRowContext(ctx, query, id).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.GoogleID, &user.Name, &user.AvatarURL, &user.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -314,6 +320,16 @@ func (p *PostgresStore) GetUserByID(ctx context.Context, id int64) (*User, error
 		return nil, err
 	}
 	return user, nil
+}
+
+func (p *PostgresStore) UpdateUser(ctx context.Context, user *User) error {
+	query := `UPDATE users SET 
+		google_id = COALESCE(NULLIF($1, ''), google_id),
+		name = COALESCE(NULLIF($2, ''), name),
+		avatar_url = COALESCE(NULLIF($3, ''), avatar_url)
+	WHERE id = $4;`
+	_, err := p.db.ExecContext(ctx, query, user.GoogleID, user.Name, user.AvatarURL, user.ID)
+	return err
 }
 
 func (p *PostgresStore) Close() error {

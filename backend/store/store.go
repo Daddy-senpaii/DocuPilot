@@ -29,6 +29,7 @@ type Store interface {
 	CreateUser(ctx context.Context, user *User) error
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserByID(ctx context.Context, id int64) (*User, error)
+	UpdateUser(ctx context.Context, user *User) error
 	ListDocumentsByUser(ctx context.Context, userID int64) ([]*Document, error)
 
 	Close() error

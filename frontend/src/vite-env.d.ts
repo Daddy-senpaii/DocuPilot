@@ -18,7 +18,7 @@ interface Window {
           auto_select?: boolean;
           cancel_on_tap_outside?: boolean;
         }) => void;
-        prompt: (notification?: (notification: { isNotDisplayed: () => boolean; getNotDisplayedReason: () => string }) => void) => void;
+        prompt: (notification?: (notification: { isNotDisplayed: () => boolean; getNotDisplayedReason?: () => string; isSkippedMoment?: () => boolean }) => void) => void;
         renderButton: (element: HTMLElement, options: Record<string, unknown>) => void;
       };
     };

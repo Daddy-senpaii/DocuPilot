@@ -170,6 +170,22 @@ func TestMemoryStoreUserOperations(t *testing.T) {
 		t.Fatalf("expected email pilot@example.com, got %q", byID.Email)
 	}
 
+	// Update user OAuth profile
+	byID.GoogleID = "google-uid-12345"
+	byID.Name = "DocuPilot Pilot"
+	byID.AvatarURL = "https://lh3.googleusercontent.com/a/avatar.png"
+	if err := s.UpdateUser(ctx, byID); err != nil {
+		t.Fatalf("failed to update user: %v", err)
+	}
+
+	updated, err := s.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("failed to fetch updated user: %v", err)
+	}
+	if updated.GoogleID != "google-uid-12345" || updated.Name != "DocuPilot Pilot" || updated.AvatarURL != "https://lh3.googleusercontent.com/a/avatar.png" {
+		t.Fatalf("updated user fields mismatch: %+v", updated)
+	}
+
 	// Non-existent user
 	if _, err := s.GetUserByID(ctx, 9999); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound for missing user, got %v", err)

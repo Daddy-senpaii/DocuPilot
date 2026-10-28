@@ -1882,3 +1882,70 @@ textarea:focus, input[type="text"]:focus, input[type="email"]:focus, input[type=
   text-align: center;
 }
 
+.google-launch-popup-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: #ffffff;
+  border: 1px solid #dadce0;
+  border-radius: 10px;
+  color: #3c4043;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-bottom: 0.85rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.google-launch-popup-btn:hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: #1a73e8;
+  color: #1a73e8;
+}
+
+.google-divider {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  margin: 0.75rem 0 1.15rem;
+}
+
+.google-divider::before,
+.google-divider::after {
+  content: '';
+  flex: 1;
+  border-bottom: 1px solid #dadce0;
+}
+
+.google-divider span {
+  padding: 0 0.75rem;
+  color: #70757a;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.auth-gmail-direct-btn {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+  background: none;
+  border: none;
+  color: #64748b;
+  font-size: 0.82rem;
+  font-weight: 500;
+  text-align: center;
+  cursor: pointer;
+  padding: 0.25rem 0;
+  transition: color 0.15s ease;
+}
+
+.auth-gmail-direct-btn:hover {
+  color: #2563eb;
+  text-decoration: underline;
+}
+

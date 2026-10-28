@@ -86,6 +86,57 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
+  const handleGooglePopupSignIn = () => {
+    setError(null);
+    setGoogleDialogError(null);
+    setOauthLoading('google');
+
+    const width = 500;
+    const height = 620;
+    const left = window.screenX + (window.outerWidth - width) / 2;
+    const top = window.screenY + (window.outerHeight - height) / 2;
+
+    const popup = window.open(
+      `${API_BASE_URL}/api/auth/google/login`,
+      'docupilot_google_oauth',
+      `width=${width},height=${height},left=${left},top=${top},status=no,menubar=no,toolbar=no`
+    );
+
+    if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+      // Browser popup blocker triggered - fall back to account dialog
+      setOauthLoading(null);
+      setShowGoogleDialog(true);
+      return;
+    }
+
+    const messageHandler = (event: MessageEvent) => {
+      if (event.data?.type === 'GOOGLE_AUTH_SUCCESS') {
+        window.removeEventListener('message', messageHandler);
+        clearInterval(popupWatcher);
+        const { token, user } = event.data;
+        onAuthSuccess(token, user, `Signed in successfully with Google (${user.email || 'account'})!`);
+        setShowGoogleDialog(false);
+        onClose();
+        setOauthLoading(null);
+      } else if (event.data?.type === 'GOOGLE_AUTH_ERROR') {
+        window.removeEventListener('message', messageHandler);
+        clearInterval(popupWatcher);
+        setError(event.data.error || 'Google authentication failed');
+        setOauthLoading(null);
+      }
+    };
+
+    window.addEventListener('message', messageHandler);
+
+    const popupWatcher = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(popupWatcher);
+        window.removeEventListener('message', messageHandler);
+        setOauthLoading(null);
+      }
+    }, 800);
+  };
+
   const handleGoogleSignIn = () => {
     setError(null);
     setGoogleDialogError(null);
@@ -100,12 +151,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           }
         },
       });
-      window.google.accounts.id.prompt();
+      window.google.accounts.id.prompt((notification) => {
+        if (notification.isNotDisplayed() || (notification.isSkippedMoment && notification.isSkippedMoment())) {
+          handleGooglePopupSignIn();
+        }
+      });
       return;
     }
 
-    // Open authentic Google account chooser & Gmail address prompt
-    setShowGoogleDialog(true);
+    handleGooglePopupSignIn();
   };
 
   const handleGoogleAccountSelected = async (email: string) => {
@@ -324,6 +378,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </button>
         </div>
 
+        <button
+          type="button"
+          className="auth-gmail-direct-btn"
+          onClick={() => {
+            setError(null);
+            setGoogleDialogError(null);
+            setShowGoogleDialog(true);
+          }}
+        >
+          Or choose account / enter Gmail ID directly
+        </button>
+
         <div className="oauth-divider">
           <span>or continue with email</span>
         </div>
@@ -514,6 +580,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         isOpen={showGoogleDialog}
         onClose={() => setShowGoogleDialog(false)}
         onSelectAccount={handleGoogleAccountSelected}
+        onLaunchPopup={handleGooglePopupSignIn}
         loading={oauthLoading === 'google'}
         error={googleDialogError}
       />

@@ -256,6 +256,31 @@ func (m *MemoryStore) GetUserByID(_ context.Context, id int64) (*User, error) {
 	return &userCopy, nil
 }
 
+func (m *MemoryStore) UpdateUser(_ context.Context, user *User) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	existing, exists := m.users[user.ID]
+	if !exists {
+		return ErrNotFound
+	}
+	if user.GoogleID != "" {
+		existing.GoogleID = user.GoogleID
+	}
+	if user.Name != "" {
+		existing.Name = user.Name
+	}
+	if user.AvatarURL != "" {
+		existing.AvatarURL = user.AvatarURL
+	}
+	if user.Email != "" && user.Email != existing.Email {
+		delete(m.usersByEmail, existing.Email)
+		existing.Email = user.Email
+		m.usersByEmail[user.Email] = existing
+	}
+	return nil
+}
+
 func (m *MemoryStore) ListDocumentsByUser(_ context.Context, userID int64) ([]*Document, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

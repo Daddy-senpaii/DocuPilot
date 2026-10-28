@@ -7,6 +7,9 @@ type User struct {
 	ID           int64     `json:"id"`
 	Email        string    `json:"email"`
 	PasswordHash string    `json:"-"` // Omitted from JSON for security
+	GoogleID     string    `json:"google_id,omitempty"`
+	Name         string    `json:"name,omitempty"`
+	AvatarURL    string    `json:"avatar_url,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 

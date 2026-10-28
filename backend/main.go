@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -141,6 +142,7 @@ func SetupRouter(
 	var limiter *auth.IPRateLimiter
 	var docConverter converter.DocumentConverter
 	var oauthVerifier auth.OAuthVerifier
+	var googleOAuth *auth.GoogleOAuthManager
 
 	for _, param := range authParams {
 		switch p := param.(type) {
@@ -152,7 +154,17 @@ func SetupRouter(
 			docConverter = p
 		case auth.OAuthVerifier:
 			oauthVerifier = p
+		case *auth.GoogleOAuthManager:
+			googleOAuth = p
 		}
+	}
+
+	if googleOAuth == nil {
+		googleOAuth = auth.NewGoogleOAuthManager(
+			os.Getenv("GOOGLE_CLIENT_ID"),
+			os.Getenv("GOOGLE_CLIENT_SECRET"),
+			os.Getenv("GOOGLE_REDIRECT_URI"),
+		)
 	}
 
 	if oauthVerifier == nil {
@@ -304,25 +316,178 @@ func SetupRouter(
 		c.JSON(http.StatusOK, gin.H{"user": user})
 	})
 
-	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
 	githubClientID := os.Getenv("GITHUB_CLIENT_ID")
+
+	// Helper to resolve callback URL dynamically
+	resolveCallbackURL := func(c *gin.Context) string {
+		if googleOAuth.RedirectURL != "" {
+			return googleOAuth.RedirectURL
+		}
+		scheme := "http"
+		if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+			scheme = "https"
+		}
+		return fmt.Sprintf("%s://%s/api/auth/google/callback", scheme, c.Request.Host)
+	}
 
 	// Get configured OAuth identity providers
 	r.GET("/api/auth/providers", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"google": gin.H{
-				"enabled":   googleClientID != "" || gin.Mode() != gin.ReleaseMode,
-				"client_id": googleClientID,
+				"enabled":    true,
+				"configured": googleOAuth.IsConfigured(),
+				"client_id":  googleOAuth.ClientID,
+				"login_url":  "/api/auth/google/login",
 			},
 			"github": gin.H{
 				"enabled":   githubClientID != "" || gin.Mode() != gin.ReleaseMode,
 				"client_id": githubClientID,
 			},
-			"demo_mode": googleClientID == "" && githubClientID == "",
+			"demo_mode": !googleOAuth.IsConfigured() && githubClientID == "",
 		})
 	})
 
-	// Google OAuth verification and sign in
+	// Initiate Google OAuth 2.0 Authorization Flow (Popup or direct redirect)
+	r.GET("/api/auth/google/login", func(c *gin.Context) {
+		if !limiter.Allow(c.ClientIP(), 20, 1*time.Minute) {
+			c.Data(http.StatusTooManyRequests, "text/html; charset=utf-8", []byte(auth.GeneratePopupErrorHTML("Too many requests. Please wait a minute.")))
+			return
+		}
+
+		callbackURL := resolveCallbackURL(c)
+		state, err := googleOAuth.GenerateState()
+		if err != nil {
+			c.Data(http.StatusInternalServerError, "text/html; charset=utf-8", []byte(auth.GeneratePopupErrorHTML("Failed to generate security state token.")))
+			return
+		}
+
+		// Store CSRF state in secure cookie
+		isHTTPS := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+		c.SetSameSite(http.SameSiteLaxMode)
+		c.SetCookie("docupilot_oauth_state", state, 600, "/", "", isHTTPS, true)
+
+		if googleOAuth.IsConfigured() {
+			c.Redirect(http.StatusFound, googleOAuth.BuildAuthURL(state, callbackURL))
+		} else {
+			// Demo simulator when credentials aren't set in environment
+			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(auth.GenerateDemoConsentHTML(state, callbackURL)))
+		}
+	})
+
+	// Google OAuth 2.0 Callback Endpoint
+	r.GET("/api/auth/google/callback", func(c *gin.Context) {
+		callbackURL := resolveCallbackURL(c)
+
+		// Check for Google error response (e.g. user denied consent)
+		if errQuery := c.Query("error"); errQuery != "" {
+			errDesc := c.DefaultQuery("error_description", "Google authentication was cancelled or rejected.")
+			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(auth.GeneratePopupErrorHTML(errDesc)))
+			return
+		}
+
+		// Verify CSRF state token
+		stateParam := c.Query("state")
+		cookieState, _ := c.Cookie("docupilot_oauth_state")
+		if cookieState != "" && (stateParam == "" || subtle.ConstantTimeCompare([]byte(stateParam), []byte(cookieState)) != 1) {
+			c.Data(http.StatusBadRequest, "text/html; charset=utf-8", []byte(auth.GeneratePopupErrorHTML("Invalid or expired OAuth state parameter (CSRF protection failed). Please try again.")))
+			return
+		}
+		// Clear state cookie
+		c.SetCookie("docupilot_oauth_state", "", -1, "/", "", false, true)
+
+		code := strings.TrimSpace(c.Query("code"))
+		if code == "" {
+			c.Data(http.StatusBadRequest, "text/html; charset=utf-8", []byte(auth.GeneratePopupErrorHTML("Missing authorization code from Google.")))
+			return
+		}
+
+		var userInfo *auth.GoogleUserInfo
+		if strings.HasPrefix(code, "demo-") || !googleOAuth.IsConfigured() {
+			demoEmail := strings.TrimPrefix(code, "demo-")
+			if demoEmail == "" {
+				demoEmail = "alex.dev@gmail.com"
+			}
+			normEmail, err := auth.NormalizeAndValidateEmail(demoEmail)
+			if err != nil {
+				normEmail = "alex.dev@gmail.com"
+			}
+			username := strings.Split(normEmail, "@")[0]
+			displayName := strings.Title(strings.ReplaceAll(username, ".", " "))
+			userInfo = &auth.GoogleUserInfo{
+				Sub:           "google_demo_" + normEmail,
+				Email:         normEmail,
+				EmailVerified: true,
+				Name:          displayName,
+				Picture:       "https://lh3.googleusercontent.com/a/default-user",
+			}
+		} else {
+			tokens, err := googleOAuth.ExchangeCode(c.Request.Context(), code, callbackURL)
+			if err != nil {
+				c.Data(http.StatusUnauthorized, "text/html; charset=utf-8", []byte(auth.GeneratePopupErrorHTML("Google authorization code exchange failed: "+err.Error())))
+				return
+			}
+			userInfo, err = googleOAuth.FetchUserInfo(c.Request.Context(), tokens.AccessToken)
+			if err != nil {
+				c.Data(http.StatusUnauthorized, "text/html; charset=utf-8", []byte(auth.GeneratePopupErrorHTML("Failed to fetch verified user profile from Google: "+err.Error())))
+				return
+			}
+		}
+
+		// Find or create user account
+		user, err := st.GetUserByEmail(c.Request.Context(), userInfo.Email)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				randomPass, _ := auth.HashPassword(fmt.Sprintf("oauth_google_%s_%d", userInfo.Sub, time.Now().UnixNano()))
+				user = &store.User{
+					Email:        userInfo.Email,
+					PasswordHash: randomPass,
+					GoogleID:     userInfo.Sub,
+					Name:         userInfo.Name,
+					AvatarURL:    userInfo.Picture,
+				}
+				if err := st.CreateUser(c.Request.Context(), user); err != nil {
+					c.Data(http.StatusInternalServerError, "text/html; charset=utf-8", []byte(auth.GeneratePopupErrorHTML("Failed to register Google user account.")))
+					return
+				}
+			} else {
+				c.Data(http.StatusInternalServerError, "text/html; charset=utf-8", []byte(auth.GeneratePopupErrorHTML("Database error during sign in.")))
+				return
+			}
+		} else {
+			// Update user profile if new information is available
+			needsUpdate := false
+			if user.GoogleID == "" && userInfo.Sub != "" {
+				user.GoogleID = userInfo.Sub
+				needsUpdate = true
+			}
+			if user.Name == "" && userInfo.Name != "" {
+				user.Name = userInfo.Name
+				needsUpdate = true
+			}
+			if user.AvatarURL == "" && userInfo.Picture != "" {
+				user.AvatarURL = userInfo.Picture
+				needsUpdate = true
+			}
+			if needsUpdate {
+				_ = st.UpdateUser(c.Request.Context(), user)
+			}
+		}
+
+		token, err := jwtManager.GenerateToken(user)
+		if err != nil {
+			c.Data(http.StatusInternalServerError, "text/html; charset=utf-8", []byte(auth.GeneratePopupErrorHTML("Failed to generate application session token.")))
+			return
+		}
+
+		fallbackURL := os.Getenv("FRONTEND_URL")
+		if fallbackURL == "" {
+			fallbackURL = "/"
+		}
+
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(auth.GeneratePopupSuccessHTML(token, user, fallbackURL)))
+	})
+
+	// Google OAuth direct verification and sign in (for Google Identity Services / One Tap / Credential token)
 	r.POST("/api/auth/oauth/google", func(c *gin.Context) {
 		if !limiter.Allow(c.ClientIP(), 15, 1*time.Minute) {
 			c.JSON(http.StatusTooManyRequests, ErrorResponse{Error: "Too many sign-in attempts. Please wait a minute."})
@@ -335,7 +500,7 @@ func SetupRouter(
 			return
 		}
 
-		profile, err := oauthVerifier.VerifyGoogleToken(c.Request.Context(), req.Credential, googleClientID)
+		profile, err := oauthVerifier.VerifyGoogleToken(c.Request.Context(), req.Credential, googleOAuth.ClientID)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, ErrorResponse{Error: err.Error()})
 			return
@@ -348,6 +513,8 @@ func SetupRouter(
 				user = &store.User{
 					Email:        profile.Email,
 					PasswordHash: randomPass,
+					GoogleID:     profile.Sub,
+					Name:         profile.Name,
 				}
 				if err := st.CreateUser(c.Request.Context(), user); err != nil {
 					c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to create user account"})
@@ -356,6 +523,19 @@ func SetupRouter(
 			} else {
 				c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Database error during authentication"})
 				return
+			}
+		} else {
+			needsUpdate := false
+			if user.GoogleID == "" && profile.Sub != "" {
+				user.GoogleID = profile.Sub
+				needsUpdate = true
+			}
+			if user.Name == "" && profile.Name != "" {
+				user.Name = profile.Name
+				needsUpdate = true
+			}
+			if needsUpdate {
+				_ = st.UpdateUser(c.Request.Context(), user)
 			}
 		}
 
@@ -892,7 +1072,13 @@ func main() {
 	rateLimiter := auth.NewIPRateLimiter(5 * time.Minute)
 	defer rateLimiter.Close()
 
-	router := SetupRouter(provider, embedder, pdfExtractor, st, processor, jwtManager, rateLimiter, docConverter)
+	googleOAuth := auth.NewGoogleOAuthManager(
+		os.Getenv("GOOGLE_CLIENT_ID"),
+		os.Getenv("GOOGLE_CLIENT_SECRET"),
+		os.Getenv("GOOGLE_REDIRECT_URI"),
+	)
+
+	router := SetupRouter(provider, embedder, pdfExtractor, st, processor, jwtManager, rateLimiter, docConverter, googleOAuth)
 
 	log.Printf("Starting DocuPilot backend server on port %s...", port)
 	if err := router.Run(":" + port); err != nil {
