@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"docupilot/backend/extractor"
 )
 
 // Supported conversion formats.
@@ -230,14 +232,34 @@ func (c *LibreOfficeConverter) Convert(ctx context.Context, req ConvertRequest) 
 		return nil, fmt.Errorf("failed to write input file to disk: %w", err)
 	}
 
-	// Prepare command arguments
-	args := []string{"--headless"}
+	// Prepare command arguments with isolated user profile to avoid lock/permission collisions in headless/Docker environments
+	userProfile := fmt.Sprintf("-env:UserInstallation=file://%s/libo_user", filepath.ToSlash(tmpDir))
+	args := []string{
+		userProfile,
+		"--headless",
+		"--invisible",
+		"--nodefault",
+		"--nofirststartwizard",
+		"--nolockcheck",
+		"--nologo",
+		"--norestore",
+	}
 
 	switch {
 	case src == FormatPDF && tgt == FormatDOCX:
 		args = append(args, "--infilter=writer_pdf_import", "--convert-to", "docx")
 	case src == FormatPDF && tgt == FormatXLSX:
-		args = append(args, "--infilter=calc_pdf_import", "--convert-to", "xlsx")
+		// Convert PDF text lines to CSV intermediate for Calc import
+		pdfExtractor := extractor.NewPDFExtractor()
+		text, err := pdfExtractor.ExtractText(bytes.NewReader(req.Data), int64(len(req.Data)))
+		if err == nil && len(text) > 0 {
+			csvContent := convertTextToCSV(text)
+			csvPath := filepath.Join(tmpDir, "intermediate.csv")
+			if err := os.WriteFile(csvPath, []byte(csvContent), 0600); err == nil {
+				inputPath = csvPath
+			}
+		}
+		args = append(args, "--convert-to", "xlsx")
 	case src == FormatPDF && tgt == FormatPPTX:
 		args = append(args, "--infilter=impress_pdf_import", "--convert-to", "pptx")
 	case src == FormatDOCX && tgt == FormatTXT:
@@ -434,4 +456,29 @@ func extractTextFromWordXML(xmlData []byte) string {
 	}
 
 	return strings.TrimSpace(sb.String())
+}
+
+// convertTextToCSV converts newline-delimited text into comma-separated table lines.
+func convertTextToCSV(text string) string {
+	lines := strings.Split(text, "\n")
+	var sb strings.Builder
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		for i, field := range fields {
+			if i > 0 {
+				sb.WriteString(",")
+			}
+			if strings.ContainsAny(field, ",\"\n") {
+				sb.WriteString("\"" + strings.ReplaceAll(field, "\"", "\"\"") + "\"")
+			} else {
+				sb.WriteString(field)
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }

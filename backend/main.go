@@ -102,6 +102,7 @@ func corsMiddleware() gin.HandlerFunc {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Gemini-Api-Key")
+		c.Writer.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
 		c.Writer.Header().Set("X-Content-Type-Options", "nosniff")
 		c.Writer.Header().Set("X-Frame-Options", "DENY")
 		c.Writer.Header().Set("X-XSS-Protection", "1; mode=block")
@@ -670,6 +671,7 @@ func SetupRouter(
 			Data:         fileBytes,
 		})
 		if err != nil {
+			log.Printf("[Converter] Conversion error for %s (%s -> %s): %v", fileHeader.Filename, sourceFormat, targetFormat, err)
 			c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
 			return
 		}

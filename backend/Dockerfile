@@ -19,7 +19,17 @@ FROM alpine:latest
 
 WORKDIR /app
 
-RUN apk --no-cache add ca-certificates tzdata libreoffice
+ENV HOME=/tmp
+
+RUN apk --no-cache add \
+    ca-certificates \
+    tzdata \
+    libreoffice \
+    fontconfig \
+    ttf-dejavu \
+    ttf-freefont \
+    ttf-liberation \
+    font-noto
 
 COPY --from=builder /docupilot-backend /app/docupilot-backend
 

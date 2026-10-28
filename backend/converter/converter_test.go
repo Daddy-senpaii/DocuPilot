@@ -239,3 +239,28 @@ func TestDocxToTextFallback(t *testing.T) {
 		t.Errorf("expected output filename sample.txt, got %s", res.Filename)
 	}
 }
+
+func TestRealLibreOfficeConversion(t *testing.T) {
+	c := NewLibreOfficeConverter("", nil)
+	if c.BinaryPath() == "" {
+		t.Skip("LibreOffice binary not found on local system; skipping real execution test")
+	}
+
+	ctx := context.Background()
+	res, err := c.Convert(ctx, ConvertRequest{
+		Filename:     "greeting.txt",
+		SourceFormat: "txt",
+		TargetFormat: "pdf",
+		Data:         []byte("Hello DocuPilot Real LibreOffice Conversion Test"),
+	})
+	if err != nil {
+		t.Fatalf("real conversion failed: %v", err)
+	}
+
+	if res.Filename != "greeting.pdf" {
+		t.Errorf("expected filename greeting.pdf, got %s", res.Filename)
+	}
+	if !bytes.HasPrefix(res.Data, []byte("%PDF-")) {
+		t.Errorf("expected PDF magic header, got: %v", res.Data[:10])
+	}
+}
