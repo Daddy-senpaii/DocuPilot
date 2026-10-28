@@ -1,10 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, API_BASE_URL } from '../types';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
   onAuthSuccess: (token: string, user: User, message: string) => void;
+}
+
+interface ProvidersResponse {
+  google?: { enabled: boolean; client_id: string };
+  github?: { enabled: boolean; client_id: string };
+  demo_mode?: boolean;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
@@ -19,6 +25,100 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [providers, setProviders] = useState<ProvidersResponse | null>(null);
+  const [oauthLoading, setOauthLoading] = useState<'google' | 'github' | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    fetch(`${API_BASE_URL}/api/auth/providers`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: ProvidersResponse | null) => {
+        if (data) {
+          setProviders(data);
+          if (data.google?.client_id && !document.getElementById('google-gsi-client')) {
+            const script = document.createElement('script');
+            script.id = 'google-gsi-client';
+            script.src = 'https://accounts.google.com/gsi/client';
+            script.async = true;
+            script.defer = true;
+            document.body.appendChild(script);
+          }
+        }
+      })
+      .catch(() => {});
+  }, [isOpen]);
+
+  const handleOAuthSubmit = async (provider: 'google' | 'github', tokenOrCredential: string) => {
+    setOauthLoading(provider);
+    setError(null);
+    try {
+      const endpoint = `${API_BASE_URL}/api/auth/oauth/${provider}`;
+      const payload = provider === 'google'
+        ? { credential: tokenOrCredential }
+        : { token: tokenOrCredential };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `${provider} authentication failed`);
+      }
+
+      const providerLabel = provider === 'google' ? 'Google' : 'GitHub';
+      onAuthSuccess(data.token, data.user, `Signed in successfully with ${providerLabel}!`);
+      onClose();
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError(`An unexpected error occurred during ${provider} sign in.`);
+      }
+    } finally {
+      setOauthLoading(null);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setError(null);
+    const googleClientId = providers?.google?.client_id;
+
+    if (googleClientId) {
+      if (typeof window !== 'undefined' && window.google?.accounts?.id) {
+        window.google.accounts.id.initialize({
+          client_id: googleClientId,
+          callback: async (resp: { credential: string }) => {
+            if (resp.credential) {
+              await handleOAuthSubmit('google', resp.credential);
+            }
+          },
+        });
+        window.google.accounts.id.prompt();
+        return;
+      }
+    }
+
+    // Demo fallback / fast testing
+    await handleOAuthSubmit('google', 'demo-google-token');
+  };
+
+  const handleGitHubSignIn = async () => {
+    setError(null);
+    const githubClientId = providers?.github?.client_id;
+
+    if (githubClientId) {
+      const redirectUri = encodeURIComponent(window.location.origin);
+      window.location.href = `https://github.com/login/oauth/authorize?client_id=${githubClientId}&scope=user:email&redirect_uri=${redirectUri}`;
+      return;
+    }
+
+    // Demo fallback / fast testing
+    await handleOAuthSubmit('github', 'demo-github-token');
+  };
 
   if (!isOpen) return null;
 
@@ -140,6 +240,60 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           >
             Create Account
           </button>
+        </div>
+
+        {/* Social OAuth Sign In Options */}
+        <div className="oauth-btn-group">
+          <button
+            type="button"
+            className="oauth-btn oauth-google"
+            onClick={handleGoogleSignIn}
+            disabled={loading || oauthLoading !== null}
+          >
+            {oauthLoading === 'google' ? (
+              <span className="btn-loading-content">
+                <span className="spinner" />
+                Connecting to Google...
+              </span>
+            ) : (
+              <>
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                  <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.66v3.05h3.87c2.26-2.09 3.67-5.17 3.67-9.15z" />
+                  <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.87-3.05c-1.08.72-2.45 1.16-4.06 1.16-3.13 0-5.78-2.11-6.73-4.96H1.28v3.15C3.26 21.36 7.34 24 12 24z" />
+                  <path fill="#FBBC05" d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.61H1.28C.46 8.23 0 10.06 0 12s.46 3.77 1.28 5.39l3.99-3.15z" />
+                  <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.34 0 3.26 2.64 1.28 6.61l3.99 3.15c.95-2.85 3.6-4.96 6.73-4.96z" />
+                </svg>
+                <span>Continue with Google</span>
+                {providers?.demo_mode && <span className="oauth-demo-badge">Demo</span>}
+              </>
+            )}
+          </button>
+
+          <button
+            type="button"
+            className="oauth-btn oauth-github"
+            onClick={handleGitHubSignIn}
+            disabled={loading || oauthLoading !== null}
+          >
+            {oauthLoading === 'github' ? (
+              <span className="btn-loading-content">
+                <span className="spinner" />
+                Connecting to GitHub...
+              </span>
+            ) : (
+              <>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2z" />
+                </svg>
+                <span>Continue with GitHub</span>
+                {providers?.demo_mode && <span className="oauth-demo-badge">Demo</span>}
+              </>
+            )}
+          </button>
+        </div>
+
+        <div className="oauth-divider">
+          <span>or continue with email</span>
         </div>
 
         {error && (

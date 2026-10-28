@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -39,6 +40,17 @@ type LoginRequest struct {
 type AuthResponse struct {
 	Token string      `json:"token"`
 	User  *store.User `json:"user"`
+}
+
+// GoogleOAuthRequest represents the payload from Google Sign-In containing the ID credential token.
+type GoogleOAuthRequest struct {
+	Credential string `json:"credential"`
+}
+
+// GitHubOAuthRequest represents the payload from GitHub Sign-In containing the access token or code.
+type GitHubOAuthRequest struct {
+	Token string `json:"token"`
+	Code  string `json:"code"`
 }
 
 // AskRequest represents the user request payload containing text context or a document ID and a question.
@@ -128,6 +140,7 @@ func SetupRouter(
 	var jwtManager *auth.JWTManager
 	var limiter *auth.IPRateLimiter
 	var docConverter converter.DocumentConverter
+	var oauthVerifier auth.OAuthVerifier
 
 	for _, param := range authParams {
 		switch p := param.(type) {
@@ -137,7 +150,13 @@ func SetupRouter(
 			limiter = p
 		case converter.DocumentConverter:
 			docConverter = p
+		case auth.OAuthVerifier:
+			oauthVerifier = p
 		}
+	}
+
+	if oauthVerifier == nil {
+		oauthVerifier = auth.NewDefaultOAuthVerifier()
 	}
 
 	if docConverter == nil {
@@ -283,6 +302,131 @@ func SetupRouter(
 		}
 
 		c.JSON(http.StatusOK, gin.H{"user": user})
+	})
+
+	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
+	githubClientID := os.Getenv("GITHUB_CLIENT_ID")
+
+	// Get configured OAuth identity providers
+	r.GET("/api/auth/providers", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"google": gin.H{
+				"enabled":   googleClientID != "" || gin.Mode() != gin.ReleaseMode,
+				"client_id": googleClientID,
+			},
+			"github": gin.H{
+				"enabled":   githubClientID != "" || gin.Mode() != gin.ReleaseMode,
+				"client_id": githubClientID,
+			},
+			"demo_mode": googleClientID == "" && githubClientID == "",
+		})
+	})
+
+	// Google OAuth verification and sign in
+	r.POST("/api/auth/oauth/google", func(c *gin.Context) {
+		if !limiter.Allow(c.ClientIP(), 15, 1*time.Minute) {
+			c.JSON(http.StatusTooManyRequests, ErrorResponse{Error: "Too many sign-in attempts. Please wait a minute."})
+			return
+		}
+
+		var req GoogleOAuthRequest
+		if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Credential) == "" {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Google credential token is required"})
+			return
+		}
+
+		profile, err := oauthVerifier.VerifyGoogleToken(c.Request.Context(), req.Credential, googleClientID)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, ErrorResponse{Error: err.Error()})
+			return
+		}
+
+		user, err := st.GetUserByEmail(c.Request.Context(), profile.Email)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				randomPass, _ := auth.HashPassword(fmt.Sprintf("oauth_google_%s_%d", profile.Sub, time.Now().UnixNano()))
+				user = &store.User{
+					Email:        profile.Email,
+					PasswordHash: randomPass,
+				}
+				if err := st.CreateUser(c.Request.Context(), user); err != nil {
+					c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to create user account"})
+					return
+				}
+			} else {
+				c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Database error during authentication"})
+				return
+			}
+		}
+
+		token, err := jwtManager.GenerateToken(user)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to generate authentication token"})
+			return
+		}
+
+		c.JSON(http.StatusOK, AuthResponse{
+			Token: token,
+			User:  user,
+		})
+	})
+
+	// GitHub OAuth verification and sign in
+	r.POST("/api/auth/oauth/github", func(c *gin.Context) {
+		if !limiter.Allow(c.ClientIP(), 15, 1*time.Minute) {
+			c.JSON(http.StatusTooManyRequests, ErrorResponse{Error: "Too many sign-in attempts. Please wait a minute."})
+			return
+		}
+
+		var req GitHubOAuthRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid request payload"})
+			return
+		}
+
+		tokenToVerify := strings.TrimSpace(req.Token)
+		if tokenToVerify == "" {
+			tokenToVerify = strings.TrimSpace(req.Code)
+		}
+		if tokenToVerify == "" {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "GitHub access token or code is required"})
+			return
+		}
+
+		profile, err := oauthVerifier.VerifyGitHubToken(c.Request.Context(), tokenToVerify)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, ErrorResponse{Error: err.Error()})
+			return
+		}
+
+		user, err := st.GetUserByEmail(c.Request.Context(), profile.Email)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				randomPass, _ := auth.HashPassword(fmt.Sprintf("oauth_github_%s_%d", profile.Sub, time.Now().UnixNano()))
+				user = &store.User{
+					Email:        profile.Email,
+					PasswordHash: randomPass,
+				}
+				if err := st.CreateUser(c.Request.Context(), user); err != nil {
+					c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to create user account"})
+					return
+				}
+			} else {
+				c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Database error during authentication"})
+				return
+			}
+		}
+
+		token, err := jwtManager.GenerateToken(user)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to generate authentication token"})
+			return
+		}
+
+		c.JSON(http.StatusOK, AuthResponse{
+			Token: token,
+			User:  user,
+		})
 	})
 
 	// --- Scoped Document & Question Answering Endpoints ---

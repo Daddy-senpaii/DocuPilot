@@ -489,6 +489,27 @@ export default function App() {
     setStatusMessage(message);
   };
 
+  // Check for OAuth redirect callback (e.g. GitHub callback code)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+    if (code) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      fetch(`${API_BASE_URL}/api/auth/oauth/github`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.token && data?.user) {
+            handleAuthSuccess(data.token, data.user, 'Signed in successfully with GitHub!');
+          }
+        })
+        .catch(() => {});
+    }
+  }, []);
+
   const handleLogout = () => {
     localStorage.removeItem('docupilot_auth_token');
     setAuthToken(null);

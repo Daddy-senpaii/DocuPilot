@@ -12,8 +12,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"docupilot/backend/ai"
+	"docupilot/backend/auth"
 	"docupilot/backend/converter"
 	"docupilot/backend/extractor"
 	"docupilot/backend/jobs"
@@ -681,5 +683,133 @@ func TestConvertEndpoints(t *testing.T) {
 
 	if wValid.Body.String() != "word-docx-bytes" {
 		t.Fatalf("unexpected converted file body: %s", wValid.Body.String())
+	}
+}
+
+func TestOAuthProvidersEndpoint(t *testing.T) {
+	env, cleanup := setupTestRouter(nil)
+	defer cleanup()
+
+	req, _ := http.NewRequest(http.MethodGet, "/api/auth/providers", nil)
+	w := httptest.NewRecorder()
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to parse json: %v", err)
+	}
+
+	if _, ok := res["google"]; !ok {
+		t.Errorf("expected 'google' in response")
+	}
+}
+
+func TestGoogleOAuthFlow(t *testing.T) {
+	mockOAuth := &auth.MockOAuthVerifier{}
+	jwtManager := auth.NewJWTManager("test-secret-key-32-chars-long!", time.Hour)
+	st := store.NewMemoryStore()
+
+	router := SetupRouter(
+		&ai.MockProvider{Answer: "mock"},
+		ai.NewMockEmbedder(),
+		&mockPDFExtractor{Text: "test"},
+		st,
+		nil,
+		jwtManager,
+		mockOAuth,
+	)
+
+	// Test 1: New user registration via Google OAuth
+	reqBody := bytes.NewBufferString(`{"credential":"valid-google-id-token"}`)
+	req, _ := http.NewRequest(http.MethodPost, "/api/auth/oauth/google", reqBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from Google OAuth, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var authRes AuthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &authRes); err != nil {
+		t.Fatalf("failed to decode auth response: %v", err)
+	}
+	if authRes.Token == "" {
+		t.Errorf("expected non-empty JWT token")
+	}
+	if authRes.User.Email != "test.google@example.com" {
+		t.Errorf("expected email test.google@example.com, got %s", authRes.User.Email)
+	}
+
+	// Test 2: Existing user sign in with Google OAuth
+	reqBody2 := bytes.NewBufferString(`{"credential":"valid-google-id-token"}`)
+	req2, _ := http.NewRequest(http.MethodPost, "/api/auth/oauth/google", reqBody2)
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 from existing user Google OAuth, got %d", w2.Code)
+	}
+
+	// Test 3: Empty credential returns 400
+	reqBody3 := bytes.NewBufferString(`{"credential":""}`)
+	req3, _ := http.NewRequest(http.MethodPost, "/api/auth/oauth/google", reqBody3)
+	req3.Header.Set("Content-Type", "application/json")
+	w3 := httptest.NewRecorder()
+	router.ServeHTTP(w3, req3)
+
+	if w3.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty credential, got %d", w3.Code)
+	}
+}
+
+func TestGitHubOAuthFlow(t *testing.T) {
+	mockOAuth := &auth.MockOAuthVerifier{}
+	jwtManager := auth.NewJWTManager("test-secret-key-32-chars-long!", time.Hour)
+	st := store.NewMemoryStore()
+
+	router := SetupRouter(
+		&ai.MockProvider{Answer: "mock"},
+		ai.NewMockEmbedder(),
+		&mockPDFExtractor{Text: "test"},
+		st,
+		nil,
+		jwtManager,
+		mockOAuth,
+	)
+
+	// Test 1: Successful GitHub OAuth
+	reqBody := bytes.NewBufferString(`{"token":"valid-github-token"}`)
+	req, _ := http.NewRequest(http.MethodPost, "/api/auth/oauth/github", reqBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from GitHub OAuth, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var authRes AuthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &authRes); err != nil {
+		t.Fatalf("failed to decode auth response: %v", err)
+	}
+	if authRes.User.Email != "test.github@example.com" {
+		t.Errorf("expected email test.github@example.com, got %s", authRes.User.Email)
+	}
+
+	// Test 2: Missing token/code returns 400
+	reqBody2 := bytes.NewBufferString(`{}`)
+	req2, _ := http.NewRequest(http.MethodPost, "/api/auth/oauth/github", reqBody2)
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing token, got %d", w2.Code)
 	}
 }
