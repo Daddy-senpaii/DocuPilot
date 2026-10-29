@@ -32,9 +32,12 @@ export const ConverterStudioTab: React.FC<ConverterStudioTabProps> = ({
   return (
     <div className="converter-section">
       <div className="converter-header">
-        <h3>Fast & High-Fidelity Document Converter</h3>
+        <div className="converter-title-row">
+          <h3>Fast & High-Fidelity Document Converter</h3>
+          <span className="converter-engine-badge">⚡ 8 Formats Supported</span>
+        </div>
         <p className="converter-subtitle">
-          Convert between PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), and Text (.txt).
+          Convert seamlessly between PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), and Text (.txt).
         </p>
       </div>
 
@@ -55,6 +58,7 @@ export const ConverterStudioTab: React.FC<ConverterStudioTabProps> = ({
               >
                 <span className="preset-icon">{pair.icon}</span>
                 <span className="preset-title">{pair.title}</span>
+                {isSelected && <span className="preset-active-dot" />}
               </button>
             );
           })}

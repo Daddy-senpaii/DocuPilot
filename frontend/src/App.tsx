@@ -586,67 +586,71 @@ export default function App() {
 
         {error && (
           <div className="alert-error" role="alert">
-            {error}
+            <span className="alert-icon">⚠️</span>
+            <span>{error}</span>
           </div>
         )}
 
         {statusMessage && (
           <div className="alert-success" role="status">
-            {statusMessage}
+            <span className="alert-icon">✨</span>
+            <span>{statusMessage}</span>
           </div>
         )}
 
-        {activeTab === 'upload' && (
-          <DocumentUploadTab
-            activeDoc={activeDoc}
-            text={text}
-            uploading={uploading}
-            onUploadFile={uploadPdfFile}
-          />
-        )}
+        <div className="tab-panel-container" key={activeTab}>
+          {activeTab === 'upload' && (
+            <DocumentUploadTab
+              activeDoc={activeDoc}
+              text={text}
+              uploading={uploading}
+              onUploadFile={uploadPdfFile}
+            />
+          )}
 
-        {activeTab === 'paste' && (
-          <PasteTextTab
-            text={text}
-            onChangeText={(newText) => {
-              setText(newText);
-              setActiveDoc(null);
-            }}
-            disabled={loading}
-          />
-        )}
+          {activeTab === 'paste' && (
+            <PasteTextTab
+              text={text}
+              onChangeText={(newText) => {
+                setText(newText);
+                setActiveDoc(null);
+              }}
+              disabled={loading}
+            />
+          )}
 
-        {activeTab === 'library' && (
-          <DocumentLibraryTab
-            documents={documents}
-            activeDoc={activeDoc}
-            onSelectDocument={handleSelectDocument}
-            onDeleteDocument={handleDeleteDocument}
-          />
-        )}
+          {activeTab === 'library' && (
+            <DocumentLibraryTab
+              documents={documents}
+              activeDoc={activeDoc}
+              onSelectDocument={handleSelectDocument}
+              onDeleteDocument={handleDeleteDocument}
+            />
+          )}
 
-        {activeTab === 'converter' && (
-          <ConverterStudioTab
-            selectedPair={selectedPair}
-            onSelectPair={(pair) => {
-              setSelectedPair(pair);
-              setConvError(null);
-              setConvResult(null);
-            }}
-            convFile={convFile}
-            onFileSelect={handleConverterFileSelect}
-            convLoading={convLoading}
-            convError={convError}
-            convResult={convResult}
-            onRunConversion={handleRunConversion}
-            onSendConvertedToQA={handleSendConvertedToQA}
-            onReset={() => {
-              setConvFile(null);
-              setConvResult(null);
-              setConvError(null);
-            }}
-          />
-        )}
+          {activeTab === 'converter' && (
+            <ConverterStudioTab
+              selectedPair={selectedPair}
+              onSelectPair={(pair) => {
+                setSelectedPair(pair);
+                setConvError(null);
+                setConvResult(null);
+              }}
+              convFile={convFile}
+              onFileSelect={handleConverterFileSelect}
+              convLoading={convLoading}
+              convError={convError}
+              convResult={convResult}
+              onRunConversion={handleRunConversion}
+              onSendConvertedToQA={handleSendConvertedToQA}
+              onReset={() => {
+                setConvFile(null);
+                setConvResult(null);
+                setConvError(null);
+              }}
+            />
+          )}
+        </div>
 
         {activeTab !== 'converter' && (
           <ChatSection

@@ -32,14 +32,19 @@ export const ChatSection: React.FC<ChatSectionProps> = ({
   copiedAnswer,
   onCopyAnswer,
 }) => {
+  const hasContent = Boolean(activeDoc || text.trim());
+
   return (
     <>
       <hr className="divider" />
 
-      <form onSubmit={onAsk}>
-        {(activeDoc || text.trim()) && (
+      <form onSubmit={onAsk} className="chat-form">
+        {hasContent && (
           <div className="quick-prompts-bar">
-            <span className="quick-prompts-label">✨ Quick Prompts:</span>
+            <span className="quick-prompts-label">
+              <span className="sparkle-icon">✨</span>
+              <span>Quick Prompts:</span>
+            </span>
             <div className="quick-prompts-list">
               {QUICK_PROMPTS.map((prompt, idx) => (
                 <button
@@ -56,39 +61,64 @@ export const ChatSection: React.FC<ChatSectionProps> = ({
           </div>
         )}
 
-        <div className="form-group">
-          <label htmlFor="question">Ask a question about this document:</label>
-          <input
-            type="text"
-            id="question"
-            value={question}
-            onChange={(e) => onChangeQuestion(e.target.value)}
-            placeholder="e.g., What are the main recommendations?"
-            disabled={loading || uploading}
-            required
-          />
+        <div className="form-group question-form-group">
+          <label htmlFor="question">
+            <span>Ask a question about this document:</span>
+            {activeDoc && (
+              <span className="active-target-badge">
+                Target: {activeDoc.filename}
+              </span>
+            )}
+          </label>
+          <div className="question-input-wrapper">
+            <input
+              type="text"
+              id="question"
+              value={question}
+              onChange={(e) => onChangeQuestion(e.target.value)}
+              placeholder="e.g., What are the key takeaways and recommendations?"
+              disabled={loading || uploading}
+              required
+            />
+          </div>
         </div>
 
         <button
           type="submit"
-          className="btn-primary"
-          disabled={loading || uploading || (!text.trim() && !activeDoc) || !question.trim()}
+          className="btn-primary btn-ask-pilot"
+          disabled={loading || uploading || !hasContent || !question.trim()}
         >
-          {loading ? 'Searching & Generating Answer...' : 'Ask DocuPilot'}
+          {loading ? (
+            <span className="btn-loading-content">
+              <span className="spinner" />
+              <span>Searching Passages & Generating Answer...</span>
+            </span>
+          ) : (
+            <span className="ask-btn-content">
+              <span className="ask-btn-icon">✨</span>
+              <span>Ask DocuPilot</span>
+            </span>
+          )}
         </button>
       </form>
 
       {(answer || isStreaming) && (
         <section className="answer-card" aria-live="polite">
           <div className="answer-header">
-            <h2>
-              💡 AI Grounded Answer{' '}
-              {isStreaming && <span className="streaming-badge">Streaming live...</span>}
-            </h2>
+            <div className="answer-title-group">
+              <span className="ai-gem-icon">💡</span>
+              <h2>AI Grounded Answer</h2>
+              {isStreaming && (
+                <span className="streaming-badge">
+                  <span className="pulse-dot" />
+                  <span>Streaming live...</span>
+                </span>
+              )}
+            </div>
             {answer && !isStreaming && (
               <button
                 type="button"
-                className="btn-copy-answer"
+                className={`btn-copy-answer ${copiedAnswer ? 'copied' : ''}`}
                 onClick={onCopyAnswer}
                 title="Copy answer to clipboard"
               >
@@ -103,7 +133,9 @@ export const ChatSection: React.FC<ChatSectionProps> = ({
 
           {sources.length > 0 && (
             <details className="sources-section" open={isStreaming}>
-              <summary>Retrieved Sources ({sources.length} passages)</summary>
+              <summary>
+                <span>🔍 Retrieved Sources ({sources.length} passages)</span>
+              </summary>
               <div className="sources-list">
                 {sources.map((s, idx) => (
                   <pre key={idx} className="source-item">{s}</pre>
@@ -116,12 +148,22 @@ export const ChatSection: React.FC<ChatSectionProps> = ({
 
       {history.length > 0 && (
         <section className="history-card">
-          <h2>📜 Previous Questions & Answers</h2>
+          <div className="history-card-header">
+            <span className="history-icon">📜</span>
+            <h2>Previous Questions & Answers</h2>
+            <span className="history-count-badge">{history.length}</span>
+          </div>
           <div className="history-list">
             {history.map((item) => (
               <div key={item.id} className="history-item">
-                <p className="history-q"><strong>Q:</strong> {item.question}</p>
-                <p className="history-a"><strong>A:</strong> {item.answer}</p>
+                <div className="history-q-row">
+                  <span className="history-q-badge">Q</span>
+                  <p className="history-q">{item.question}</p>
+                </div>
+                <div className="history-a-row">
+                  <span className="history-a-badge">A</span>
+                  <div className="history-a">{item.answer}</div>
+                </div>
               </div>
             ))}
           </div>
@@ -130,3 +172,4 @@ export const ChatSection: React.FC<ChatSectionProps> = ({
     </>
   );
 };
+
